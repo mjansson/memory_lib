@@ -1,0 +1,41 @@
+
+import os.path
+
+Import("env")
+
+
+# SOURCES
+
+memorysources = [
+
+	'memory.c'
+
+	]
+
+memoryheaders = [
+
+	'types.h', 'memory.h'
+
+	]
+
+
+# ADD INTERNAL FLAGS
+
+libenv = env.Clone()
+libenv.Append( CPPDEFINES=['MEMORY_COMPILE=1'] )
+
+
+# OUTPUTS
+
+env['memorylib'] = libenv.StaticLibrary( 'memory', memorysources )
+
+
+# DEPENDENCIES
+
+#if env['toolset'] == 'gnu':
+#	libenv.Depends( [ os.path.splitext( x )[0] + '.o' for x in memorysources ], '#/memory/memory.h.gch' )
+
+
+# INSTALLS
+
+libenv.AddPostAction( 'memory', libenv.Install( '#lib/${platform}${platformsuffix}/${buildprofile}', [ env['memorylib'] ] ) )
