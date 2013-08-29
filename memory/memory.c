@@ -82,7 +82,7 @@ struct _memory_descriptor
 	unsigned int                                 max_count;
 	char                                         pad[24];
 };
-FOUNDATION_STATIC_ASSERT( (sizeof(memory_descriptor_t)&63) == 0, memory_descriptor_align ); //The structure needs to align to 64 bytes for _memory_build_pointer to work with descriptor blocks
+FOUNDATION_STATIC_ASSERT( (sizeof(memory_descriptor_t)&63) == 0, memory_descriptor_align ); //The structure needs to align to 64 bytes for pointer/tag union to work with descriptor blocks
 
 #define MEMORY_DESCRIPTOR_POINTER_HIGH_MASK_BITS 6
 #define MEMORY_DESCRIPTOR_POINTER_LOW_MASK_BITS  6
@@ -104,8 +104,8 @@ FOUNDATION_STATIC_ASSERT( sizeof(memory_descriptor_pointer_t) == sizeof(uint64_t
 
 #define MEMORY_POINTER_HIGH_MASK_BITS            6
 #define MEMORY_POINTER_LOW_MASK_BITS             6
-#define MEMORY_POINTER_BITS                      54  //Masked out 6 high and 4 low bits (ok since sizeof(descriptor)==64 and aligned to page boundaries in alloc and incremented with at least 32 bytes), so (pointer<<4) to get pointer and (pointer>>4) to set pointer.
-#define MEMORY_CREDIT_BITS                       10  //This requires smallest heap block size to be 32 bytes, since pointers must be zero low four bits
+#define MEMORY_POINTER_BITS                      52  //Masked out 6 high and 6 low bits (ok since sizeof(descriptor)==64 and aligned to page boundaries in alloc and incremented with at least 32 bytes), so (pointer<<4) to get pointer and (pointer>>4) to set pointer.
+#define MEMORY_CREDIT_BITS                       12  //This requires smallest heap block size to be 32 bytes, since pointers must be zero low four bits
 #define MEMORY_MAX_CREDITS                       ((1<<MEMORY_CREDIT_BITS)-1)
 
 struct _memory_pointer
@@ -153,10 +153,10 @@ static void*                  _memory_malloc_from_new( memory_heap_t* heap );
 static memory_heap_t*         _memory_find_heap( size_t size );
 
 static memory_descriptor_t*   _memory_allocate_descriptor( void );
-static void                   _memory_retire_descriptor( volatile memory_heap_t* heap, memory_descriptor_t* descriptor );
-static void                   _memory_remove_empty_descriptor( volatile memory_heap_t* heap, memory_descriptor_t* descriptor );
+static void                   _memory_retire_descriptor( memory_heap_t* heap, memory_descriptor_t* descriptor );
+static void                   _memory_remove_empty_descriptor( memory_heap_t* heap, memory_descriptor_t* descriptor );
 
-static void                   _memory_heap_put_partial( memory_descriptor_t* descriptor );
+static void                   _memory_heap_put_partial( memory_heap_t* heap, memory_descriptor_t* descriptor );
 static memory_descriptor_t*   _memory_heap_get_partial( memory_heap_t* heap );
 
 static memory_descriptor_t*   _memory_partial_list_get( memory_sizeclass_t* size_class );
@@ -170,7 +170,7 @@ static void                   _memory_deallocate( void* p );
 
 static volatile memory_descriptor_pointer_t      _memory_descriptor_available = {0};
 static memory_sizeclass_t*                       _memory_sizeclass = 0;
-static unsigned int                              _memory_num_size_class = 0;
+static unsigned int                              _memory_num_sizeclass = 0;
 static memory_heap_pool_t                        _memory_heap_pool[BUILD_SIZE_HEAP_THREAD_POOL] = {0};
 static memory_statistics_t                       _memory_statistics = {0};
 
@@ -254,7 +254,7 @@ static PURECALL memory_heap_t* _memory_find_heap( size_t size )
 	ipool = thread_id() % BUILD_SIZE_HEAP_THREAD_POOL;
 	pool = _memory_heap_pool + ipool;
 
-	for( iheap = 0; iheap < _memory_num_size_class; ++iheap )
+	for( iheap = 0; iheap < _memory_num_sizeclass; ++iheap )
 	{
 		if( pool->heaps[iheap].size_class->block_size >= size )
 		{
@@ -282,23 +282,24 @@ static CONSTCALL FORCEINLINE unsigned int _memory_get_align( unsigned int align 
 }
 
 
-static void _memory_heap_put_partial( memory_descriptor_t* descriptor )
+static void _memory_heap_put_partial( memory_heap_t* heap, memory_descriptor_t* descriptor )
 {
 	memory_descriptor_t* prev;
 	memory_descriptor_pointer_t old_partial;
 	memory_descriptor_pointer_t new_partial;
 
+	FOUNDATION_ASSERT_MSG( heap && ( heap == descriptor->heap ), "Heap mismatch when put partial descriptor" );
 	do
 	{
-		old_partial.raw = descriptor->heap->partial.raw;
+		old_partial.raw = heap->partial.raw;
 		new_partial.raw = old_partial.raw;
 		prev = (memory_descriptor_t*)( (uintptr_t)old_partial.ptr.pointer << MEMORY_DESCRIPTOR_POINTER_LOW_MASK_BITS );
 		new_partial.ptr.pointer = ( (uintptr_t)descriptor >> MEMORY_DESCRIPTOR_POINTER_LOW_MASK_BITS );
 		++new_partial.ptr.tag;
-	} while( !atomic_cas64( &descriptor->heap->partial.raw, new_partial.raw, old_partial.raw ) );
+	} while( !atomic_cas64( &heap->partial.raw, new_partial.raw, old_partial.raw ) );
 	
 	if( prev )
-		_memory_partial_list_put( descriptor->heap->size_class, prev );
+		_memory_partial_list_put( heap->size_class, prev );
 }
 
 
@@ -515,7 +516,7 @@ static memory_descriptor_t* _memory_allocate_descriptor( void )
 }
 
 
-static void _memory_retire_descriptor( volatile memory_heap_t* heap, memory_descriptor_t* descriptor )
+static void _memory_retire_descriptor( memory_heap_t* heap, memory_descriptor_t* descriptor )
 {
 	memory_descriptor_pointer_t new_available;
 	memory_descriptor_pointer_t old_available;
@@ -554,22 +555,23 @@ static void _memory_retire_descriptor( volatile memory_heap_t* heap, memory_desc
 }
 
 
-static void _memory_remove_empty_descriptor( volatile memory_heap_t* heap, memory_descriptor_t* descriptor )
+static void _memory_remove_empty_descriptor( memory_heap_t* heap, memory_descriptor_t* descriptor )
 {
 	memory_descriptor_pointer_t old_partial;
 	memory_descriptor_pointer_t new_partial;
 
+	FOUNDATION_ASSERT_MSG( heap && ( heap == descriptor->heap ), "Descriptor heap mismatch while removing empty" );
+
+	//Retire if it was heap partial and we manage to remove it
 	old_partial.raw = descriptor->heap->partial.raw;
-	if( old_partial.ptr.pointer == 0 )
-	{
-		new_partial.raw = old_partial.raw;
-		new_partial.ptr.pointer = ( (uintptr_t)descriptor >> MEMORY_DESCRIPTOR_POINTER_LOW_MASK_BITS );
-		++new_partial.ptr.tag;
-		if( atomic_cas64( &heap->partial.raw, new_partial.raw, old_partial.raw ) )
-			return;
-	}
-	
-	_memory_partial_list_remove_empty( heap->size_class );
+	new_partial.raw = old_partial.raw;
+	old_partial.ptr.pointer = ( (uintptr_t)descriptor >> MEMORY_DESCRIPTOR_POINTER_LOW_MASK_BITS );
+	new_partial.ptr.pointer = 0;
+	++new_partial.ptr.tag;
+	if( atomic_cas64( &heap->partial.raw, new_partial.raw, old_partial.raw ) )
+		_memory_retire_descriptor( heap, descriptor );
+	else	
+		_memory_partial_list_remove_empty( heap->size_class );
 }
 
 
@@ -593,7 +595,7 @@ static bool _memory_update_active_superblock( memory_heap_t* heap, memory_descri
 		new_anchor.anchor.state = MEMORY_ANCHOR_PARTIAL;
 	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw, old_anchor.raw ) );
 
-	_memory_heap_put_partial( descriptor );
+	_memory_heap_put_partial( heap, descriptor );
 
 	return false;
 }
@@ -1026,7 +1028,7 @@ static void _memory_deallocate( void* p )
 	if( new_anchor.anchor.state == MEMORY_ANCHOR_EMPTY )
 		_memory_remove_empty_descriptor( descriptor->heap, descriptor );
 	else if( old_anchor.anchor.state == MEMORY_ANCHOR_FULL )
-		_memory_heap_put_partial( descriptor );
+		_memory_heap_put_partial( descriptor->heap, descriptor );
 
 #if BUILD_ENABLE_MEMORY_STATISTICS
 	atomic_add64( &_memory_statistics.allocated_current, -(int64_t)descriptor->heap->size_class->block_size );
@@ -1040,9 +1042,9 @@ static int _memory_initialize( void )
 	//Initialize heaps
 	unsigned int block_size[11] = {    32,   64,   96,  128,  256, 512, 1024, 4096, 8192, 32767, 65535 };
 	unsigned int block_count[11] = { 1024, 1024, 1024, 1024, 1024, 512,  256,  128,  128,   128,   128 };
-	unsigned int num_size_classes = 11;
+	unsigned int num_sizeclass = 11;
 	unsigned int ipool, iheap, iclass;
-	unsigned int size = num_size_classes * ( sizeof( memory_sizeclass_t ) + ( sizeof( memory_heap_t ) * BUILD_SIZE_HEAP_THREAD_POOL ) );
+	unsigned int size = num_sizeclass * ( sizeof( memory_sizeclass_t ) + ( sizeof( memory_heap_t ) * BUILD_SIZE_HEAP_THREAD_POOL ) );
 	memory_heap_t* base_heap;
 	void* block;
 
@@ -1054,22 +1056,22 @@ static int _memory_initialize( void )
 	memset( block, 0, size );
 
 	_memory_sizeclass = block;
-	for( iclass = 0; iclass < num_size_classes; ++iclass )
+	for( iclass = 0; iclass < num_sizeclass; ++iclass )
 	{
 		//TODO: Tweak these values (or even profile at runtime per-project)
 		_memory_sizeclass[iclass].block_size = block_size[iclass];
 		_memory_sizeclass[iclass].superblock_size = block_size[iclass] * block_count[iclass];
 	}
 	
-	base_heap = (memory_heap_t*)( _memory_sizeclass + num_size_classes );
+	base_heap = (memory_heap_t*)( _memory_sizeclass + num_sizeclass );
 	for( ipool = 0; ipool < BUILD_SIZE_HEAP_THREAD_POOL; ++ipool )
 	{
-		_memory_heap_pool[ipool].heaps = base_heap + ( ipool * num_size_classes );
-		for( iheap = 0; iheap < num_size_classes; ++iheap )
+		_memory_heap_pool[ipool].heaps = base_heap + ( ipool * num_sizeclass );
+		for( iheap = 0; iheap < num_sizeclass; ++iheap )
 			_memory_heap_pool[ipool].heaps[iheap].size_class = _memory_sizeclass + iheap;
 	}
 		
-	_memory_num_size_class = num_size_classes;
+	_memory_num_sizeclass = num_sizeclass;
 	_memory_descriptor_available.raw = 0;
 
 	return 0;
@@ -1085,7 +1087,7 @@ static void _memory_shutdown( void )
 
 	for( ipool = 0; ipool < BUILD_SIZE_HEAP_THREAD_POOL; ++ipool )
 	{
-		for( iheap = 0; iheap < _memory_num_size_class; ++iheap )
+		for( iheap = 0; iheap < _memory_num_sizeclass; ++iheap )
 		{
 			memory_heap_t* heap = _memory_heap_pool[ipool].heaps + iheap;
 			memory_descriptor_t* partial;
@@ -1115,7 +1117,7 @@ static void _memory_shutdown( void )
 		_memory_heap_pool[ipool].heaps = 0;
 	}
 
-	for( iclass = 0; iclass < _memory_num_size_class; ++iclass )
+	for( iclass = 0; iclass < _memory_num_sizeclass; ++iclass )
 	{
 		memory_sizeclass_t* size_class = _memory_sizeclass + iclass;
 		
@@ -1141,9 +1143,9 @@ static void _memory_shutdown( void )
 		descriptor = (memory_descriptor_t*)descriptor->next;
 	}
 	
-	size = _memory_num_size_class * ( sizeof( memory_sizeclass_t ) + ( sizeof( memory_heap_t ) * BUILD_SIZE_HEAP_THREAD_POOL ) );
+	size = _memory_num_sizeclass * ( sizeof( memory_sizeclass_t ) + ( sizeof( memory_heap_t ) * BUILD_SIZE_HEAP_THREAD_POOL ) );
 
-	_memory_num_size_class = 0;
+	_memory_num_sizeclass = 0;
 
 	_memory_free_superblock( _memory_sizeclass, size );
 
