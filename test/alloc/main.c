@@ -174,9 +174,7 @@ void* allocator_thread( object_t thread, void* argp )
 	unsigned int id = 0;
 	void* addr[4096];
 	char data[8192];
-	tick_t timestamp;
 	unsigned int cursize;
-	tick_t elapsed = 0;
 	unsigned int iwait = 0;
 
 	for( id = 0; id < 8192; ++id )
@@ -187,55 +185,55 @@ void* allocator_thread( object_t thread, void* argp )
 
 	for( iloop = 0; iloop < arg.loops; ++iloop )
 	{
-		timestamp = time_current();
-
 		for( ipass = 0; ipass < arg.passes; ++ipass )
 		{
-			cursize = arg.datasize[(iloop+ipass+iwait)%arg.num_datasize];
+			cursize = arg.datasize[ ( iloop + ipass + iwait ) % arg.num_datasize ] + ( iloop % 1024 );
 
 			addr[ipass] = memsys.allocate( 0, cursize, 0, MEMORY_PERSISTENT );
 			EXPECT_NE( addr[ipass], 0 );
 
-			//memcpy( addr[ipass], data, cursize );
+			memcpy( addr[ipass], data, cursize );
 			
-			/*for( icheck = 0; icheck < ipass; ++icheck )
+			for( icheck = 0; icheck < ipass; ++icheck )
 			{
 				EXPECT_NE( addr[icheck], addr[ipass] );
 				if( addr[icheck] < addr[ipass] )
 					EXPECT_LT( pointer_offset( addr[icheck], cursize ), addr[ipass] ); //LT since we have some bookkeeping overhead in memory manager between blocks
 				else if( addr[icheck] > addr[ipass] )
 					EXPECT_LT( pointer_offset( addr[ipass], cursize ), addr[icheck] );
-			}*/
+			}
 		}
 
-		//for( ipass = 0; ipass < 1024; ++ipass )
-		//	EXPECT_EQ( memcmp( addr[ipass], data, cursize ), 0 );
-		
 		for( ipass = 0; ipass < arg.passes; ++ipass )
-			memsys.deallocate( addr[ipass] );
+		{
+			cursize = arg.datasize[ ( iloop + ipass + iwait ) % arg.num_datasize ] + ( iloop % 1024 );
 
-		elapsed += time_elapsed_ticks( timestamp );
+			EXPECT_EQ( memcmp( addr[ipass], data, cursize ), 0 );
+			memsys.deallocate( addr[ipass] );
+		}
 	}
 
-	log_infof( "Memory thread time: %.2f", time_ticks_to_seconds( elapsed ) );
-	
 	return 0;
 }
 
 
 DECLARE_TEST( alloc, threaded )
 {
-#define NUM_ALLOC_THREADS   6
-	object_t thread[NUM_ALLOC_THREADS];
-	void* threadres[NUM_ALLOC_THREADS];
+	object_t thread[32];
+	void* threadres[32];
 	unsigned int i;
 	bool running;
+	unsigned int num_alloc_threads;
 #if BUILD_ENABLE_MEMORY_STATISTICS
 	volatile memory_statistics_t stat;
 #endif
 	allocator_thread_arg_t thread_arg;
 	memory_system_t memsys = memory_system();
 	memsys.initialize();
+
+	num_alloc_threads = system_hardware_threads() + 1;
+	if( num_alloc_threads < 3 )
+		num_alloc_threads = 3;
 
 #if BUILD_ENABLE_MEMORY_STATISTICS
 	memory_statistics_reset();
@@ -256,11 +254,10 @@ DECLARE_TEST( alloc, threaded )
 	log_infof( "Total count:      %llu", stat.allocations_total );
 #endif
 	
+	//Warm-up
 	thread_arg.memory_system = memsys;
-	thread_arg.loops = 300000;
+	thread_arg.loops = 100000;
 	thread_arg.passes = 1024;
-	//for( i = 0; i < 7; ++i )
-	//	thread_arg.datasize[i] = 500;
 	thread_arg.datasize[0] = 19;
 	thread_arg.datasize[1] = 249;
 	thread_arg.datasize[2] = 797;
@@ -270,19 +267,38 @@ DECLARE_TEST( alloc, threaded )
 	thread_arg.datasize[6] = 389;
 	thread_arg.num_datasize = 7;
 
-	for( i = 0; i < NUM_ALLOC_THREADS; ++i )
+	EXPECT_EQ( allocator_thread( 0, &thread_arg ), 0 );
+
+	for( i = 0; i < 7; ++i )
+		thread_arg.datasize[i] = 500;
+	EXPECT_EQ( allocator_thread( 0, &thread_arg ), 0 );
+
+	thread_arg.datasize[0] = 19;
+	thread_arg.datasize[1] = 249;
+	thread_arg.datasize[2] = 797;
+	thread_arg.datasize[3] = 3;
+	thread_arg.datasize[4] = 79;
+	thread_arg.datasize[5] = 34;
+	thread_arg.datasize[6] = 389;
+	thread_arg.num_datasize = 7;
+
+#if BUILD_ENABLE_MEMORY_STATISTICS
+	memory_statistics_reset();
+#endif
+
+	for( i = 0; i < num_alloc_threads; ++i )
 	{
 		thread[i] = thread_create( allocator_thread, "allocator", THREAD_PRIORITY_NORMAL, 0 );
 		thread_start( thread[i], &thread_arg );
 	}
 
-	test_wait_for_threads_startup( thread, NUM_ALLOC_THREADS );
+	test_wait_for_threads_startup( thread, num_alloc_threads );
 
 	do
 	{
 		running = false;
 
-		for( i = 0; i < NUM_ALLOC_THREADS; ++i )
+		for( i = 0; i < num_alloc_threads; ++i )
 		{
 			if( thread_is_running( thread[i] ) )
 			{
@@ -294,13 +310,13 @@ DECLARE_TEST( alloc, threaded )
 		thread_yield();
 	} while( running ); 
 	
-	for( i = 0; i < NUM_ALLOC_THREADS; ++i )
+	for( i = 0; i < num_alloc_threads; ++i )
 	{
 		threadres[i] = thread_result( thread[i] );
 		thread_destroy( thread[i] );
 	}
 
-	test_wait_for_threads_exit( thread, NUM_ALLOC_THREADS );
+	test_wait_for_threads_exit( thread, num_alloc_threads );
 
 #if BUILD_ENABLE_MEMORY_STATISTICS
 	stat = memory_statistics();
@@ -317,12 +333,13 @@ DECLARE_TEST( alloc, threaded )
 	log_infof( "" );
 	log_infof( "Raw total count:  %llu", stat.allocations_total_raw );
 	log_infof( "Total count:      %llu", stat.allocations_total );
+#if BUILD_ENABLE_MEMORY_STATISTICS > 1
 	log_infof( "" );
 	log_infof( "Calls alloc oversize:           %llu", stat.allocations_calls_oversize );
 	log_infof( "Calls alloc heap:               %llu", stat.allocations_calls_heap );
 	log_infof( "Calls alloc heap loops:         %llu", stat.allocations_calls_heap_loops );
 	log_infof( "" );
-	for( i = 0; i < BUILD_SIZE_HEAP_THREAD_POOL; ++i )
+	for( i = 0; i < 32; ++i )
 		log_infof( "Calls alloc heap pool[%u]:  %llu", i, stat.allocations_calls_heap_pool[i] );
 	log_infof( "" );	
 	log_infof( "New descriptor alloc:           %llu", stat.allocations_new_descriptor_superblock );
@@ -354,6 +371,7 @@ DECLARE_TEST( alloc, threaded )
 	log_infof( "New block new stored:           %llu", stat.allocations_new_block_superblock_stores );
 	log_infof( "New block pending store:        %llu", stat.allocations_new_block_pending_stores );
 #endif
+#endif
 	
 	memsys.shutdown();
 
@@ -374,9 +392,9 @@ DECLARE_TEST( alloc, threaded )
 	log_infof( "Total count:      %llu", stat.allocations_total );
 #endif
 	
-	for( i = 0; i < NUM_ALLOC_THREADS; ++i )
+	for( i = 0; i < num_alloc_threads; ++i )
 		EXPECT_EQ( threadres[i], 0 );
-	
+
 	return 0;
 }
 

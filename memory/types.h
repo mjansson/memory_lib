@@ -75,7 +75,7 @@ typedef struct ALIGN(16) _memory_statistics
 	volatile int64_t             allocations_calls_oversize;
 	volatile int64_t             allocations_calls_heap;
 	volatile int64_t             allocations_calls_heap_loops;
-	volatile int64_t             allocations_calls_heap_pool[BUILD_SIZE_HEAP_THREAD_POOL];
+	volatile int64_t             allocations_calls_heap_pool[32];
 	
 	volatile int64_t             allocations_calls_active;
 	volatile int64_t             allocations_calls_active_no_active;

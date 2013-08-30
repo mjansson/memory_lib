@@ -22,7 +22,7 @@
 #include <foundation/platform.h>
 
 
-// Configurable choises
+// Configurable choices
 
 #ifndef BUILD_ENABLE_MEMORY_LOG
 #define BUILD_ENABLE_MEMORY_LOG               0 //BUILD_ENABLE_LOG
@@ -44,8 +44,9 @@
 #define BUILD_USE_HEAP_PENDING_SUPERBLOCK     1
 #endif
 
+#ifndef BUILD_USE_PRE_ALIGN
+#define BUILD_USE_PRE_ALIGN                   1
+#endif
+
 
 // Allocation sizes
-#ifndef BUILD_SIZE_HEAP_THREAD_POOL
-#define BUILD_SIZE_HEAP_THREAD_POOL           7
-#endif
