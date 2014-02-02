@@ -90,7 +90,11 @@ struct _memory_descriptor
 	void*                                        superblock;
 	unsigned int                                 size;
 	unsigned int                                 max_count;
+#if FOUNDATION_PLATFORM_POINTER_SIZE == 4
+	char                                         pad[36];
+#else
 	char                                         pad[24];
+#endif
 };
 FOUNDATION_STATIC_ASSERT( (sizeof(memory_descriptor_t)&63) == 0, memory_descriptor_align ); //The structure needs to align to 64 bytes for pointer/tag union to work with descriptor blocks
 
@@ -909,7 +913,7 @@ static void* _memory_malloc_from_new( memory_heap_t* heap )
 static void* _memory_allocate( uint64_t context, uint64_t size, unsigned int align, int hint )
 {
 	void* ptr = 0;
-	memory_heap_t* heap = _memory_find_heap( size );
+	memory_heap_t* heap = _memory_find_heap( (size_t)size );
 	if( !heap )
 	{
 		uintptr_t* block;
@@ -919,8 +923,8 @@ static void* _memory_allocate( uint64_t context, uint64_t size, unsigned int ali
 		if( size & 1 )
 			++size;
 		
-		block = _memory_allocate_superblock( size, true );
-		*block = size | 1;
+		block = _memory_allocate_superblock( (size_t)size, true );
+		*block = (uintptr_t)size | 1;
 
 		ptr = pointer_offset( block, sizeof( void* ) );
 
@@ -962,7 +966,7 @@ static void* _memory_allocate_zero( uint64_t context, uint64_t size, unsigned in
 {
 	void* block = _memory_allocate( context, size, align, hint );
 	if( block )
-		memset( block, 0, size );
+		memset( block, 0, (size_t)size );
 	return block;
 }
 
@@ -972,7 +976,7 @@ static void* _memory_reallocate( void* p, uint64_t size, unsigned int align, uin
 	//TODO: If block can hold extra size, return it immediately
 	void* block = _memory_allocate( memory_context(), size, align, MEMORY_PERSISTENT );
 	if( block && p && oldsize )
-		memcpy( block, p, oldsize );
+		memcpy( block, p, (size_t)oldsize );
 	_memory_deallocate( p );
 	return block;
 }
@@ -1000,7 +1004,7 @@ static void _memory_deallocate( void* p )
 		atomic_add64( &_memory_statistics.allocated_current, -(int64_t)size );
 		atomic_decr64( &_memory_statistics.allocations_current );
 #endif
-		_memory_free_superblock( p, size );
+		_memory_free_superblock( p, (size_t)size );
 		log_memory_debugf( "<< memory_deallocate() : superblock", p );
 		return;
 	}

@@ -229,7 +229,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>test.lib;foundation.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>..\..\..\lib\win32\debug</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>..\..\..\lib\win32\debug;..\..\..\..\foundation_lib\lib\win32\debug</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -308,7 +308,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalDependencies>test.lib;foundation.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>..\..\..\lib\win32\release</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>..\..\..\lib\win32\release;..\..\..\..\foundation_lib\lib\win32\release</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Deploy|Win32'">
@@ -349,7 +349,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalDependencies>test.lib;foundation.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>..\..\..\lib\win32\deploy</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>..\..\..\lib\win32\deploy;..\..\..\..\foundation_lib\lib\win32\deploy</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Profile|Win32'">
@@ -390,7 +390,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalDependencies>test.lib;foundation.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>..\..\..\lib\win32\profile</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>..\..\..\lib\win32\profile;..\..\..\..\foundation_lib\lib\win32\profile</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
