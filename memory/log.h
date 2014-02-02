@@ -20,27 +20,28 @@
     Log output */
 
 #include <foundation/platform.h>
+#include <foundation/hashstrings.h>
 
 #include <memory/types.h>
 
 
 #if BUILD_ENABLE_MEMORY_SPAM_LOG
-#  define               log_memory_spamf( msg, ... ) log_debugf( msg, __VA_ARGS__ )
+#  define               log_memory_spamf( msg, ... ) log_debugf( HASH_MEMORY, msg, __VA_ARGS__ )
 #else
 #  define               log_memory_spamf( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
 #endif
 
 #if BUILD_ENABLE_MEMORY_DEBUG_LOG
-#  define               log_memory_debugf( msg, ... ) log_debugf( msg, __VA_ARGS__ )
+#  define               log_memory_debugf( msg, ... ) log_debugf( HASH_MEMORY, msg, __VA_ARGS__ )
 #else
 #  define               log_memory_debugf( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
 #endif
 
 #if BUILD_ENABLE_MEMORY_LOG
-#  define               log_memory_infof( format, ... ) log_infof( format, __VA_ARGS__ )
-#  define               log_memory_warnf( warn, format, ... ) log_warnf( warn, format, __VA_ARGS__ )
-#  define               log_memory_errorf( err, format, ... ) log_errorf( err, format, __VA_ARGS__ )
-#  define               log_memory_panicf( err, format, ... ) log_panicf( err, format, __VA_ARGS__ )
+#  define               log_memory_infof( format, ... ) log_infof( HASH_MEMORY, format, __VA_ARGS__ )
+#  define               log_memory_warnf( warn, format, ... ) log_warnf( HASH_MEMORY, warn, format, __VA_ARGS__ )
+#  define               log_memory_errorf( err, format, ... ) log_errorf( HASH_MEMORY, err, format, __VA_ARGS__ )
+#  define               log_memory_panicf( err, format, ... ) log_panicf( HASH_MEMORY, err, format, __VA_ARGS__ )
 #else
 #  define               log_memory_infof( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
 #  define               log_memory_warnf( warn, msg, ... ) /*lint -save -e717 */ do { (void)sizeof( warn ); (void)sizeof( msg ); } while(0) /*lint -restore */

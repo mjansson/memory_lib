@@ -162,8 +162,8 @@ static memory_descriptor_t*   _memory_partial_list_get( memory_sizeclass_t* size
 static void                   _memory_partial_list_put( memory_sizeclass_t* size_class, memory_descriptor_t* descriptor );
 static void                   _memory_partial_list_remove_empty( memory_sizeclass_t* size_class );
 
-static void*                  _memory_allocate( uint16_t context, uint64_t size, unsigned int align, memory_hint_t hint );
-static void*                  _memory_allocate_zero( uint16_t context, uint64_t size, unsigned int align, memory_hint_t hint );
+static void*                  _memory_allocate( uint64_t context, uint64_t size, unsigned int align, int hint );
+static void*                  _memory_allocate_zero( uint64_t context, uint64_t size, unsigned int align, int hint );
 static void*                  _memory_reallocate( void* p, uint64_t size, unsigned int align, uint64_t oldsize );
 static void                   _memory_deallocate( void* p );
 
@@ -210,7 +210,6 @@ void _memory_free_superblock( void* ptr, size_t size )
 
 static void* _memory_allocate_superblock( size_t size, bool raw )
 {
-	log_memory_spamf( ">> _memory_allocate_superblock( %u )", size );
 #if BUILD_ENABLE_MEMORY_STATISTICS
 	atomic_incr64( &_memory_statistics.allocations_current_raw );
 	atomic_incr64( &_memory_statistics.allocations_total_raw );
@@ -221,20 +220,17 @@ static void* _memory_allocate_superblock( size_t size, bool raw )
 	#define MAP_UNINITIALIZED 0
 	#endif
 	void* block = mmap( 0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0 );
-	log_memory_debugf( "<< _memory_allocate_superblock() : %p (total %llu bytes in %lld blocks)", block, _memory_size_mmap, _memory_num_mmap - _memory_num_munmap );
 	return block;
 }
 
 
 void _memory_free_superblock( void* ptr, size_t size )
 {
-	log_memory_spamf( ">> _memory_deallocate_superblock( %p, %u )", ptr, size );
 #if BUILD_ENABLE_MEMORY_STATISTICS
 	atomic_decr64( &_memory_statistics.allocations_current_raw );
 	atomic_add64( &_memory_statistics.allocated_current_raw, -(int64_t)size );
 #endif
 	munmap( ptr, size );
-	log_memory_debugf( "<< _memory_deallocate_superblock() (total %llu bytes in %lld blocks)", _memory_size_mmap, _memory_num_mmap - _memory_num_munmap );
 }
 
 
@@ -910,7 +906,7 @@ static void* _memory_malloc_from_new( memory_heap_t* heap )
 }
 
 
-static void* _memory_allocate( uint16_t context, uint64_t size, unsigned int align, memory_hint_t hint )
+static void* _memory_allocate( uint64_t context, uint64_t size, unsigned int align, int hint )
 {
 	void* ptr = 0;
 	memory_heap_t* heap = _memory_find_heap( size );
@@ -962,7 +958,7 @@ static void* _memory_allocate( uint16_t context, uint64_t size, unsigned int ali
 }
 
 
-static void* _memory_allocate_zero( uint16_t context, uint64_t size, unsigned int align, memory_hint_t hint )
+static void* _memory_allocate_zero( uint64_t context, uint64_t size, unsigned int align, int hint )
 {
 	void* block = _memory_allocate( context, size, align, hint );
 	if( block )
