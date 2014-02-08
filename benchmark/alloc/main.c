@@ -15,41 +15,164 @@
  */
 
 #include <foundation/foundation.h>
-#include <test/test.h>
 
 #include <memory/memory.h>
 #include <memory/log.h>
 
 
-application_t test_alloc_application( void )
+static void** ptr_malloc[512];
+static void** ptr_memory[512];
+
+
+int main_initialize( void )
 {
+	int ret = 0;
+
 	application_t app = {0};
-	app.name = "Memory allocation tests";
-	app.short_name = "test_alloc";
-	app.config_dir = "test_alloc";
+	app.name = "Memory allocation benchmark";
+	app.short_name = "benchmark_alloc";
+	app.config_dir = "benchmark_alloc";
 	app.flags = APPLICATION_UTILITY;
-	return app;
-}
 
+	log_enable_prefix( false );
+	log_set_suppress( 0, ERRORLEVEL_INFO );
+	log_set_suppress( HASH_MEMORY, ERRORLEVEL_INFO );
+	log_set_suppress( HASH_BENCHMARK, ERRORLEVEL_DEBUG );
 
-memory_system_t test_alloc_memory_system( void )
-{
-	return memory_system();
-}
+	if( ( ret = foundation_initialize( memory_system_malloc(), app ) ) < 0 )
+		return ret;
 
+	config_set_int( HASH_FOUNDATION, HASH_TEMPORARY_MEMORY, 64 * 1024 );
 
-int test_alloc_initialize( void )
-{
-	log_set_suppress( HASH_MEMORY, ERRORLEVEL_DEBUG );
 	return 0;
 }
 
 
-void test_alloc_shutdown( void )
+int main_run( void* main_arg )
 {
+	int iloop, ipass;
+	tick_t time_start, time_end, time_elapsed;
+
+	memory_system_t sys_malloc = memory_system_malloc();
+	memory_system_t sys_memory = memory_system();
+
+	sys_malloc.initialize();
+	sys_memory.initialize();
+
+	for( iloop = 0; iloop < 512; ++iloop )
+	{
+		ptr_malloc[iloop] = sys_malloc.allocate( 0, sizeof( void* ) * 8192, 0, MEMORY_PERSISTENT );
+		ptr_memory[iloop] = sys_memory.allocate( 0, sizeof( void* ) * 8192, 0, MEMORY_PERSISTENT );
+	}
+
+	//Warmup phase
+	for( iloop = 0; iloop < 64; ++iloop )
+	{
+		for( ipass = 0; ipass < 8192; ++ipass )
+		{
+			ptr_malloc[0][ipass] = sys_malloc.allocate( 0, ( ipass + iloop ), 0, MEMORY_PERSISTENT );
+			ptr_memory[0][ipass] = sys_memory.allocate( 0, ( ipass + iloop ), 0, MEMORY_PERSISTENT );
+		}
+
+		for( ipass = 0; ipass < 8192; ++ipass )
+		{
+			sys_malloc.deallocate( ptr_malloc[0][ipass] );
+			sys_memory.deallocate( ptr_memory[0][ipass] );
+		}
+	}
+
+	log_info( HASH_BENCHMARK, "Single threaded small allocation");
+	log_info( HASH_BENCHMARK, "================================");
+	time_elapsed = 0;
+	time_start = time_current();
+	for( iloop = 0; iloop < 512; ++iloop )
+	{
+		for( ipass = 0; ipass < 8192; ++ipass )
+		{
+			ptr_malloc[iloop][ipass] = sys_malloc.allocate( 0, ( ipass + iloop ), 0, MEMORY_PERSISTENT );
+		}
+	}
+	time_end = time_current();
+	time_elapsed += time_diff( time_start, time_end );
+	for( iloop = 0; iloop < 512; ++iloop )
+	{
+		for( ipass = 0; ipass < 8192; ++ipass )
+		{
+			sys_malloc.deallocate( ptr_malloc[iloop][ipass] );
+		}
+	}
+	log_infof( HASH_BENCHMARK, "Malloc time: %.4" PRIREAL "s", time_ticks_to_seconds( time_elapsed ) );
+
+	time_elapsed = 0;
+	time_start = time_current();
+	for( iloop = 0; iloop < 512; ++iloop )
+	{
+		for( ipass = 0; ipass < 8192; ++ipass )
+		{
+			ptr_memory[iloop][ipass] = sys_memory.allocate( 0, ( ipass + iloop ), 0, MEMORY_PERSISTENT );
+		}
+	}
+	time_end = time_current();
+	time_elapsed += time_diff( time_start, time_end );
+	for( iloop = 0; iloop < 512; ++iloop )
+	{
+		for( ipass = 0; ipass < 8192; ++ipass )
+		{
+			sys_memory.deallocate( ptr_memory[iloop][ipass] );
+		}
+	}
+	log_infof( HASH_BENCHMARK, "Memory time: %.4" PRIREAL "s", time_ticks_to_seconds( time_elapsed ) );
+
+	log_info( HASH_BENCHMARK, "");
+	log_info( HASH_BENCHMARK, "Single threaded reallocation");
+	log_info( HASH_BENCHMARK, "============================");
+
+	log_info( HASH_BENCHMARK, "");
+	log_info( HASH_BENCHMARK, "Single threaded deallocation");
+	log_info( HASH_BENCHMARK, "============================");
+
+	log_info( HASH_BENCHMARK, "");
+	log_info( HASH_BENCHMARK, "Single threaded mixed allocation/reallocation/&deallocation");
+	log_info( HASH_BENCHMARK, "===========================================================");
+
+	log_info( HASH_BENCHMARK, "");
+	log_info( HASH_BENCHMARK, "Multi threaded allocation");
+	log_info( HASH_BENCHMARK, "=========================");
+
+	log_info( HASH_BENCHMARK, "");
+	log_info( HASH_BENCHMARK, "Multi threaded reallocation");
+	log_info( HASH_BENCHMARK, "===========================");
+
+	log_info( HASH_BENCHMARK, "");
+	log_info( HASH_BENCHMARK, "Multi threaded deallocation");
+	log_info( HASH_BENCHMARK, "===========================");
+
+	log_info( HASH_BENCHMARK, "");
+	log_info( HASH_BENCHMARK, "Multi threaded mixed allocation/reallocation/&deallocation");
+	log_info( HASH_BENCHMARK, "==========================================================");
+
+	for( iloop = 0; iloop < 512; ++iloop )
+	{
+		sys_malloc.deallocate( ptr_malloc[iloop] );
+		sys_memory.deallocate( ptr_memory[iloop] );
+	}
+
+	sys_malloc.shutdown();
+	sys_memory.shutdown();
+
+	return 0;
 }
 
 
+void main_shutdown( void )
+{
+	foundation_shutdown();
+}
+
+
+
+
+/*
 DECLARE_TEST( alloc, alloc )
 {
 	unsigned int iloop = 0;
@@ -106,10 +229,10 @@ DECLARE_TEST( alloc, alloc )
 			for( icheck = 0; icheck < ipass; ++icheck )
 			{
 				EXPECT_NE( addr[icheck], addr[ipass] );
-				/*if( addr[icheck] < addr[ipass] )
-					EXPECT_LT( pointer_offset( addr[icheck], cursize ), addr[ipass] ); //LT since we have some bookkeeping overhead in memory manager between blocks
-				else if( addr[icheck] > addr[ipass] )
-				EXPECT_LT( pointer_offset( addr[ipass], cursize ), addr[icheck] );*/
+				//if( addr[icheck] < addr[ipass] )
+				//	EXPECT_LT( pointer_offset( addr[icheck], cursize ), addr[ipass] ); //LT since we have some bookkeeping overhead in memory manager between blocks
+				//else if( addr[icheck] > addr[ipass] )
+				//	EXPECT_LT( pointer_offset( addr[ipass], cursize ), addr[icheck] );
 			}
 		}
 
@@ -433,3 +556,5 @@ test_suite_t test_suite_define( void )
 }
 
 #endif
+
+*/

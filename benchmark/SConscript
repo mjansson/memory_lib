@@ -1,0 +1,24 @@
+import os.path
+
+Import("env")
+
+# BENCHMARK SUITES
+
+benchenv    = env.Clone()
+
+benchenv.Append( CPPPATH=[benchenv['foundationpath'] + '/benchmark'] )
+benchenv.Append( LIBPATH=['#/lib/${platform}${platformsuffix}/${buildprofile}'] )
+benchenv.Append( LIBS=[ 'memory', 'foundation' ] )
+
+if benchenv['platform'] == 'linux':
+	benchenv.Append( LIBS=[ 'dl', 'rt', 'm' ] )
+elif benchenv['platform'] == 'raspberrypi':
+	benchenv.Append( LIBS=[ 'bcm_host', 'rt', 'm' ] )
+
+def makeBenchmark( name ):
+    global env
+    global benchenv
+    env[name + 'benchmark'] = benchenv.Program( 'benchmark-' + name + '${prgsuffix}', name + '/main.c' )
+    benchenv.AddPostAction( 'benchmark-' + name + '${prgsuffix}', benchenv.Install( '#bin/${platform}${platformsuffix}/${buildprofile}', [ env[name + 'benchmark'] ] ) )
+
+makeBenchmark('alloc')

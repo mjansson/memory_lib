@@ -225,6 +225,9 @@ SConscript( 'build/scons/%s/memory/SConscript' % env['buildpath']  )
 VariantDir( 'build/scons/%s/test' % env['buildpath'] , 'test', duplicate=0 )
 SConscript( 'build/scons/%s/test/SConscript' % env['buildpath']  )
 
+VariantDir( 'build/scons/%s/benchmark' % env['buildpath'] , 'benchmark', duplicate=0 )
+SConscript( 'build/scons/%s/benchmark/SConscript' % env['buildpath']  )
+
 if not env['profile'] and not env['deploy']:
 
    VariantDir( 'build/scons/%s/tools' % env['buildpath'] , 'tools', duplicate=0 )
