@@ -293,7 +293,6 @@ int main_run( void* main_arg )
 	object_t thread[64];
 	benchmark_arg_t arg[64];
 	unsigned int num_thread;
-	bool wait;
 
 	memory_system_t sys_malloc = memory_system_malloc();
 	memory_system_t sys_memory = memory_system();

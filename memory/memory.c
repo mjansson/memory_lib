@@ -977,6 +977,7 @@ static void* _memory_reallocate( void* p, uint64_t size, unsigned int align, uin
 	void* raw_descriptor;
 	memory_descriptor_t* descriptor;
 	memory_heap_t* heap;
+	void* block;
 
 	if (p)
 	{
@@ -998,7 +999,7 @@ static void* _memory_reallocate( void* p, uint64_t size, unsigned int align, uin
 		}
 	}	
 
-	void* block = _memory_allocate( memory_context(), size, align, MEMORY_PERSISTENT );
+	block = _memory_allocate( memory_context(), size, align, MEMORY_PERSISTENT );
 	if( block && p && oldsize )
 		memcpy( block, p, (size_t)( ( size < oldsize ) ? size : oldsize ) );
 	_memory_deallocate( p );
