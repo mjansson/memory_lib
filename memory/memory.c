@@ -973,10 +973,34 @@ static void* _memory_allocate_zero( uint64_t context, uint64_t size, unsigned in
 
 static void* _memory_reallocate( void* p, uint64_t size, unsigned int align, uint64_t oldsize )
 {
-	//TODO: If block can hold extra size, return it immediately
+	uint64_t need_size;
+	void* raw_descriptor;
+	memory_descriptor_t* descriptor;
+	memory_heap_t* heap;
+
+	if (p)
+	{
+		//Check if we can fit new block in old
+		void* p_raw = (uintptr_t*)p - 1; //Back up to prefix	
+		if( (*((uintptr_t*)p_raw)) & 1 )
+		{
+			if( ( size <= oldsize ) && ( size >= ( oldsize >> 1 ) ) )
+				return p;
+		}
+		else
+		{
+			raw_descriptor = *(void**)p_raw;
+			descriptor = (memory_descriptor_t*)raw_descriptor;
+			heap = descriptor->heap;
+			need_size = size + sizeof( void* );
+			if( ( need_size <= heap->size_class->block_size ) && ( need_size >= ( heap->size_class->block_size >> 1 ) ) )
+				return p;
+		}
+	}	
+
 	void* block = _memory_allocate( memory_context(), size, align, MEMORY_PERSISTENT );
 	if( block && p && oldsize )
-		memcpy( block, p, (size_t)oldsize );
+		memcpy( block, p, (size_t)( ( size < oldsize ) ? size : oldsize ) );
 	_memory_deallocate( p );
 	return block;
 }

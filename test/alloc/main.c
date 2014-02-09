@@ -236,6 +236,8 @@ DECLARE_TEST( alloc, threaded )
 	num_alloc_threads = system_hardware_threads() + 1;
 	if( num_alloc_threads < 3 )
 		num_alloc_threads = 3;
+	if( num_alloc_threads > 32 )
+		num_alloc_threads = 32;
 
 #if BUILD_ENABLE_MEMORY_STATISTICS
 	memory_statistics_reset();
