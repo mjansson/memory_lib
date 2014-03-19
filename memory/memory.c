@@ -28,11 +28,11 @@
 
 #if FOUNDATION_PLATFORM_WINDOWS
 //Interlocked* functions are full barrier, no need for explicit semantics
-//#  define MEMORY_ORDER_RELEASE() _WriteBarrier()
+//#  define MEMORY_ORDER_RELEASE() atomic_thread_fence_release()
 #  define MEMORY_ORDER_RELEASE() do {} while(0)
 #elif FOUNDATION_COMPILER_GCC
 //GCC __sync_* are full barrier, no need for explicit semantics
-//#  define MEMORY_ORDER_RELEASE() __sync_synchronize()
+//#  define MEMORY_ORDER_RELEASE() atomic_thread_fence_release()
 #  define MEMORY_ORDER_RELEASE() do {} while(0)
 #else
 #  error Define memory barrier/fence
@@ -77,14 +77,14 @@ struct _memory_anchor
 typedef union
 { 
 	memory_anchor_t                             anchor;
-	int64_t                                     raw;
+	atomic64_t                                  raw;
 } memory_anchor_value_t;
 FOUNDATION_STATIC_ASSERT( sizeof(memory_anchor_t) == sizeof(uint64_t), memory_anchor_size );
 FOUNDATION_STATIC_ASSERT( sizeof(memory_anchor_value_t) == sizeof(uint64_t), memory_anchor_union_size );
 
 struct _memory_descriptor
 {
-	volatile memory_anchor_value_t               anchor;
+	memory_anchor_value_t                        anchor;
 	memory_descriptor_t*                         next;
 	memory_heap_t*                               heap;
 	void*                                        superblock;
@@ -106,7 +106,7 @@ struct _memory_descriptor_list_pointer
 typedef union
 {
 	memory_descriptor_list_pointer_t             ptr;
-	int64_t                                      raw;
+	atomic64_t                                   raw;
 } memory_descriptor_pointer_t;
 FOUNDATION_STATIC_ASSERT( sizeof(memory_descriptor_list_pointer_t) == sizeof(uint64_t), memory_descriptor_pointer_struct_size );
 FOUNDATION_STATIC_ASSERT( sizeof(memory_descriptor_pointer_t) == sizeof(uint64_t), memory_descriptor_pointer_union_size );
@@ -119,24 +119,24 @@ struct _memory_pointer
 typedef union
 {
 	memory_pointer_t                             ptr;
-	int64_t                                      raw;
+	atomic64_t                                   raw;
 } memory_pointer_value_t;
 FOUNDATION_STATIC_ASSERT( sizeof(memory_pointer_t) == sizeof(uint64_t), memory_pointer_struct_size );
 FOUNDATION_STATIC_ASSERT( sizeof(memory_pointer_value_t) == sizeof(uint64_t), memory_pointer_union_size );
 
 struct _memory_sizeclass
 {
-	volatile memory_descriptor_pointer_t         partial;
+	memory_descriptor_pointer_t                  partial;
 	unsigned int                                 block_size;
 	unsigned int                                 superblock_size;
 };
 
 struct _memory_heap
 {
-	volatile memory_pointer_value_t              active;
-	volatile memory_descriptor_pointer_t         partial;
+	memory_pointer_value_t                       active;
+	memory_descriptor_pointer_t                  partial;
 #if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-	void*                                        pending_superblock;
+	atomicptr_t                                  pending_superblock;
 #endif
 	memory_sizeclass_t*                          size_class;
 };
@@ -171,12 +171,12 @@ static void*                  _memory_allocate_zero( uint64_t context, uint64_t 
 static void*                  _memory_reallocate( void* p, uint64_t size, unsigned int align, uint64_t oldsize );
 static void                   _memory_deallocate( void* p );
 
-static volatile memory_descriptor_pointer_t      _memory_descriptor_available = {0};
-static memory_sizeclass_t*                       _memory_sizeclass = 0;
-static unsigned int                              _memory_num_sizeclass = 0;
-static memory_heap_pool_t*                       _memory_heap_pool = 0;
-static unsigned int                              _memory_num_heap_pool = 0;
-static memory_statistics_t                       _memory_statistics = {0};
+static memory_descriptor_pointer_t      _memory_descriptor_available = {0};
+static memory_sizeclass_t*              _memory_sizeclass = 0;
+static unsigned int                     _memory_num_sizeclass = 0;
+static memory_heap_pool_t*              _memory_heap_pool = 0;
+static unsigned int                     _memory_num_heap_pool = 0;
+static memory_statistics_t              _memory_statistics = {0};
 
 
 #if FOUNDATION_PLATFORM_WINDOWS
@@ -242,7 +242,7 @@ void _memory_free_superblock( void* ptr, size_t size )
 #  error Not implemented
 #endif
 
-static volatile int32_t _memory_heap_counter = 0;
+static atomic32_t _memory_heap_counter = {0};
 
 static PURECALL memory_heap_t* _memory_find_heap( size_t size )
 {
@@ -298,7 +298,7 @@ static void _memory_heap_put_partial( memory_heap_t* heap, memory_descriptor_t* 
 		prev = MEMORY_UNMASK_POINTER( old_partial.ptr.pointer );
 		new_partial.ptr.pointer = MEMORY_MASK_POINTER( descriptor );
 		++new_partial.ptr.tag;
-	} while( !atomic_cas64( &heap->partial.raw, new_partial.raw, old_partial.raw ) );
+	} while( !atomic_cas64( &heap->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic ) );
 	
 	if( prev )
 		_memory_partial_list_put( heap->size_class, prev );
@@ -320,7 +320,7 @@ static memory_descriptor_t* _memory_heap_get_partial( memory_heap_t* heap )
 			return _memory_partial_list_get( heap->size_class );
 		new_partial.ptr.pointer = 0;
 		++new_partial.ptr.tag;
-	} while( !atomic_cas64( &heap->partial.raw, new_partial.raw, old_partial.raw ) );
+	} while( !atomic_cas64( &heap->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic ) );
 
 	return descriptor;
 }
@@ -339,7 +339,7 @@ static void _memory_partial_list_put( memory_sizeclass_t* size_class, memory_des
 		descriptor->next = MEMORY_UNMASK_POINTER( old_partial.ptr.pointer );
 		new_partial.ptr.pointer = MEMORY_MASK_POINTER( descriptor );
 		++new_partial.ptr.tag;
-	} while( !atomic_cas64( &size_class->partial.raw, new_partial.raw, old_partial.raw ) );
+	} while( !atomic_cas64( &size_class->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic ) );
 }
 
 
@@ -358,7 +358,7 @@ static memory_descriptor_t* _memory_partial_list_get( memory_sizeclass_t* size_c
 			return 0;
 		new_partial.ptr.pointer = MEMORY_MASK_POINTER( descriptor->next );
 		++new_partial.ptr.tag;
-	} while( !atomic_cas64( &size_class->partial.raw, new_partial.raw, old_partial.raw ) );
+	} while( !atomic_cas64( &size_class->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic ) );
 
 	return descriptor;
 }
@@ -402,7 +402,7 @@ static void _memory_partial_list_remove_empty( memory_sizeclass_t* size_class )
 			return;
 		new_partial.ptr.pointer = 0;
 		++new_partial.ptr.tag;
-	} while( !atomic_cas64( &size_class->partial.raw, new_partial.raw, old_partial.raw ) );
+	} while( !atomic_cas64( &size_class->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic ) );
 
 	first = descriptor;
 	last = 0;
@@ -435,7 +435,7 @@ static void _memory_partial_list_remove_empty( memory_sizeclass_t* size_class )
 		last->next = MEMORY_UNMASK_POINTER( old_partial.ptr.pointer );
 		new_partial.ptr.pointer = MEMORY_MASK_POINTER( first );
 		++new_partial.ptr.tag;
-	} while( !atomic_cas64( &size_class->partial.raw, new_partial.raw, old_partial.raw ) );
+	} while( !atomic_cas64( &size_class->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic ) );
 	
 	log_memory_spamf( "<< _memory_partial_list_remove_empty( %u ) : %u", size_class->block_size, retired );
 }
@@ -460,7 +460,7 @@ static memory_descriptor_t* _memory_allocate_descriptor( void )
 		new_available.ptr.pointer = MEMORY_MASK_POINTER( descriptor->next );
 		++new_available.ptr.tag;
 		MEMORY_ORDER_RELEASE();
-		if( atomic_cas64( &_memory_descriptor_available.raw, new_available.raw, old_available.raw ) )
+		if( atomic_cas64( &_memory_descriptor_available.raw, new_available.raw.nonatomic, old_available.raw.nonatomic ) )
 		{
 			if( descriptor )
 				return descriptor;
@@ -509,7 +509,7 @@ static memory_descriptor_t* _memory_allocate_descriptor( void )
 			++new_available.ptr.tag;
 			last->next = MEMORY_UNMASK_POINTER( old_available.ptr.pointer );
 			MEMORY_ORDER_RELEASE();
-		} while( !atomic_cas64( &_memory_descriptor_available.raw, new_available.raw, old_available.raw ) );
+		} while( !atomic_cas64( &_memory_descriptor_available.raw, new_available.raw.nonatomic, old_available.raw.nonatomic ) );
 		//NOTE: if memory conservation is more important, free superblock here and retry instead of cas-looping and setting pointer
 	}
 
@@ -528,7 +528,7 @@ static void _memory_retire_descriptor( memory_heap_t* heap, memory_descriptor_t*
 	if( descriptor->superblock )
 	{
 #if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-		if( heap->pending_superblock || !atomic_cas_ptr( &heap->pending_superblock, descriptor->superblock, 0 ) )
+		if( heap->pending_superblock.nonatomic || !atomic_cas_ptr( &heap->pending_superblock, descriptor->superblock, 0 ) )
 #endif
 			_memory_free_superblock( descriptor->superblock, heap->size_class->superblock_size );
 	}
@@ -542,7 +542,7 @@ static void _memory_retire_descriptor( memory_heap_t* heap, memory_descriptor_t*
 		new_available.ptr.pointer = MEMORY_MASK_POINTER( descriptor );
 		++new_available.ptr.tag;
 		MEMORY_ORDER_RELEASE();
-	} while( !atomic_cas64( &_memory_descriptor_available.raw, new_available.raw, old_available.raw ) );
+	} while( !atomic_cas64( &_memory_descriptor_available.raw, new_available.raw.nonatomic, old_available.raw.nonatomic ) );
 }
 
 
@@ -557,7 +557,7 @@ static void _memory_remove_empty_descriptor( memory_heap_t* heap, memory_descrip
 	{	 
 		new_partial.ptr.pointer = 0;
 		new_partial.ptr.tag = old_partial.ptr.tag + 1;
-		if( atomic_cas64( &heap->partial.raw, new_partial.raw, old_partial.raw ) )
+		if( atomic_cas64( &heap->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic ) )
 		{
 			if( descriptor->anchor.anchor.state == MEMORY_ANCHOR_EMPTY )
 				_memory_retire_descriptor( heap, descriptor );
@@ -578,7 +578,7 @@ static bool _memory_update_active_superblock( memory_heap_t* heap, memory_descri
 
 	new_active.ptr.pointer = MEMORY_MASK_POINTER( descriptor );
 	new_active.ptr.credits = more_credits - 1;
-	if( atomic_cas64( &heap->active.raw, new_active.raw, 0 ) )
+	if( atomic_cas64( &heap->active.raw, new_active.raw.nonatomic, 0 ) )
 		return true;
 
 	//Someone else installed another active superblock
@@ -589,7 +589,7 @@ static bool _memory_update_active_superblock( memory_heap_t* heap, memory_descri
 		new_anchor.raw = old_anchor.raw;
 		new_anchor.anchor.count += more_credits;
 		new_anchor.anchor.state = MEMORY_ANCHOR_PARTIAL;
-	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw, old_anchor.raw ) );
+	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic ) );
 
 	_memory_heap_put_partial( heap, descriptor );
 
@@ -620,13 +620,13 @@ static void* _memory_malloc_from_active( memory_heap_t* heap )
 			return 0;
 		}
 		if( !old_active.ptr.credits )
-			new_active.raw = 0;
+			new_active.raw.nonatomic = 0;
 		else
 		{
 			new_active.raw = old_active.raw;
 			--new_active.ptr.credits;
 		}
-	} while( !atomic_cas64( &heap->active.raw, new_active.raw, old_active.raw ) );
+	} while( !atomic_cas64( &heap->active.raw, new_active.raw.nonatomic, old_active.raw.nonatomic ) );
 
 	//Pop block
 	descriptor = MEMORY_UNMASK_POINTER( old_active.ptr.pointer );
@@ -664,7 +664,7 @@ static void* _memory_malloc_from_active( memory_heap_t* heap )
 				new_anchor.anchor.count -= more_credits;
 			}
 		}
-	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw, old_anchor.raw ) );
+	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic ) );
 
 	if( ( old_active.ptr.credits == 0 ) && ( old_anchor.anchor.count > 0 ) )
 	{
@@ -758,7 +758,7 @@ retry:
 			atomic_incr64( &_memory_statistics.allocations_calls_partial_to_full );
 #endif
 		
-	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw, old_anchor.raw ) );
+	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic ) );
 
 	do
 	{
@@ -772,7 +772,7 @@ retry:
 #endif
 		new_anchor.anchor.available = *(unsigned int*)address;
 		++new_anchor.anchor.tag;
-	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw, old_anchor.raw ) );
+	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic ) );
 
 	if( more_credits > 0 )
 		_memory_update_active_superblock( heap, descriptor, more_credits );
@@ -820,7 +820,7 @@ static void* _memory_malloc_from_new( memory_heap_t* heap )
 	descriptor->anchor.anchor.state = MEMORY_ANCHOR_ACTIVE;
 
 	//Early out if new block was put in place by other thread
-	if( heap->active.raw || heap->partial.ptr.pointer || heap->size_class->partial.ptr.pointer )
+	if( atomic_load64( &heap->active.raw ) || heap->partial.ptr.pointer || heap->size_class->partial.ptr.pointer )
 	{
 		_memory_retire_descriptor( heap, descriptor );
 #if BUILD_ENABLE_MEMORY_STATISTICS > 1
@@ -831,7 +831,7 @@ static void* _memory_malloc_from_new( memory_heap_t* heap )
 	
 	//Try to grab any existing pending superblock
 #if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-	descriptor->superblock = heap->pending_superblock;
+	descriptor->superblock = atomic_loadptr( &heap->pending_superblock );
 	if( !descriptor->superblock || !atomic_cas_ptr( &heap->pending_superblock, 0, descriptor->superblock ) )
 #endif
 	{
@@ -857,7 +857,7 @@ static void* _memory_malloc_from_new( memory_heap_t* heap )
 #endif
 	
 	MEMORY_ORDER_RELEASE();
-	if( atomic_cas64( &heap->active.raw, new_active.raw, 0 ) )
+	if( atomic_cas64( &heap->active.raw, new_active.raw.nonatomic, 0 ) )
 	{
 		//First block in superblock reserved for alignment and clobber watch overhead
 		address = base_address;
@@ -1061,7 +1061,7 @@ static void _memory_deallocate( void* p )
 		else
 			++new_anchor.anchor.count;
 		MEMORY_ORDER_RELEASE();
-	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw, old_anchor.raw ) );
+	} while( !atomic_cas64( &descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic ) );
 	
 	if( new_anchor.anchor.state == MEMORY_ANCHOR_EMPTY )
 		_memory_remove_empty_descriptor( heap, descriptor );
@@ -1122,7 +1122,7 @@ static int _memory_initialize( void )
 	_memory_num_sizeclass = num_sizeclass;
 	_memory_num_heap_pool = num_heap_pool;
 
-	_memory_descriptor_available.raw = 0;
+	atomic_store64( &_memory_descriptor_available.raw, 0 );
 
 	//Preallocate descriptors
 	_memory_retire_descriptor( 0, _memory_allocate_descriptor() );
@@ -1148,17 +1148,20 @@ static void _memory_shutdown( void )
 			partial = MEMORY_UNMASK_POINTER( heap->partial.ptr.pointer );
 			if( partial )
 				_memory_retire_descriptor( heap, partial );
-			heap->partial.raw = 0;
+			atomic_store64( &heap->partial.raw, 0 );
 		
 			descriptor = MEMORY_UNMASK_POINTER( heap->active.ptr.pointer );
 			if( descriptor )
 				_memory_retire_descriptor( heap, descriptor );
-			heap->active.raw = 0;
+			atomic_store64( &heap->active.raw, 0 );
 
 #if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-			if( heap->pending_superblock )
-				_memory_free_superblock( heap->pending_superblock, heap->size_class->superblock_size );
-			heap->pending_superblock = 0;
+			{
+				void* pending_superblock = atomic_loadptr( &heap->pending_superblock );
+				if( pending_superblock )
+					_memory_free_superblock( pending_superblock, heap->size_class->superblock_size );
+				atomic_storeptr( &heap->pending_superblock, 0 );
+			}
 #endif
 		}
 
@@ -1177,7 +1180,7 @@ static void _memory_shutdown( void )
 			partial = next;
 		}
 
-		size_class->partial.raw = 0;
+		atomic_store64( &size_class->partial.raw, 0 );
 	}
 
 	descriptor = MEMORY_UNMASK_POINTER( _memory_descriptor_available.ptr.pointer );
@@ -1201,7 +1204,7 @@ static void _memory_shutdown( void )
 	_memory_sizeclass = 0;
 	_memory_heap_pool = 0;
 
-	_memory_descriptor_available.raw = 0;
+	atomic_store64( &_memory_descriptor_available.raw, 0 );
 }
 
 
