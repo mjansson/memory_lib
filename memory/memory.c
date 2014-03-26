@@ -38,7 +38,7 @@
 #  error Define memory barrier/fence
 #endif
 
-#define MEMORY_ALIGN_MIN                        FOUNDATION_PLATFORM_POINTER_SIZE
+#define MEMORY_ALIGN_MIN                        FOUNDATION_ARCH_POINTER_SIZE
 #define MEMORY_ALIGN_MAX                        16
 
 #define MEMORY_POINTER_HIGH_MASK_BITS           6
@@ -90,7 +90,7 @@ struct _memory_descriptor
 	void*                                        superblock;
 	unsigned int                                 size;
 	unsigned int                                 max_count;
-#if FOUNDATION_PLATFORM_POINTER_SIZE == 4
+#if FOUNDATION_ARCH_POINTER_SIZE == 4
 	char                                         pad[36];
 #else
 	char                                         pad[24];
@@ -277,8 +277,8 @@ static PURECALL memory_heap_t* _memory_find_heap( size_t size )
 //#if FOUNDATION_PLATFORM_ANDROID
 //	return align ? MEMORY_ALIGN_MAX : 0;
 //#else
-//	if( align < FOUNDATION_PLATFORM_POINTER_SIZE )
-//		return align ? FOUNDATION_PLATFORM_POINTER_SIZE : 0;
+//	if( align < FOUNDATION_ARCH_POINTER_SIZE )
+//		return align ? FOUNDATION_ARCH_POINTER_SIZE : 0;
 //	align = math_align_poweroftwo( align );
 //	return ( align < MEMORY_ALIGN_MAX ) ? align : MEMORY_ALIGN_MAX;
 //#endif
