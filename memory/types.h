@@ -43,9 +43,9 @@
 #  endif
 #endif
 
+typedef struct memory_detailed_statistics_t memory_detailed_statistics_t;
 
-typedef struct ALIGN(16) _memory_statistics
-{
+FOUNDATION_ALIGNED_STRUCT(memory_detailed_statistics_t, 16) {
 	//Statistics below are available if BUILD_ENABLE_MEMORY_STATISTICS > 0
 	volatile int64_t             allocated_current_raw;
 	volatile int64_t             allocated_total_raw;
@@ -76,18 +76,18 @@ typedef struct ALIGN(16) _memory_statistics
 	volatile int64_t             allocations_calls_heap;
 	volatile int64_t             allocations_calls_heap_loops;
 	volatile int64_t             allocations_calls_heap_pool[32];
-	
+
 	volatile int64_t             allocations_calls_active;
 	volatile int64_t             allocations_calls_active_no_active;
 	volatile int64_t             allocations_calls_active_to_partial;
 	volatile int64_t             allocations_calls_active_to_active;
 	volatile int64_t             allocations_calls_active_to_full;
 	volatile int64_t             allocations_calls_active_credits;
-	
+
 	volatile int64_t             allocations_calls_partial;
 	volatile int64_t             allocations_calls_partial_tries;
 	volatile int64_t             allocations_calls_partial_no_descriptor;
 	volatile int64_t             allocations_calls_partial_to_retire;
 	volatile int64_t             allocations_calls_partial_to_active;
 	volatile int64_t             allocations_calls_partial_to_full;
-} memory_statistics_t;
+};

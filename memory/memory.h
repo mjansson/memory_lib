@@ -22,7 +22,14 @@
 #include <memory/types.h>
 
 
-MEMORY_API memory_system_t                  memory_system( void );
+MEMORY_API memory_system_t
+memory_system(void);
 
-MEMORY_API memory_statistics_t              memory_statistics( void );
-MEMORY_API void                             memory_statistics_reset( void );
+MEMORY_API memory_detailed_statistics_t
+memory_detailed_statistics(void);
+
+MEMORY_API void
+memory_detailed_statistics_reset(void);
+
+MEMORY_API version_t
+memory_module_version(void);

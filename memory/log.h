@@ -24,34 +24,33 @@
 
 #include <memory/types.h>
 
-
 #if BUILD_ENABLE_MEMORY_SPAM_LOG
-#  define               log_memory_spamf( msg, ... ) log_debugf( HASH_MEMORY, msg, __VA_ARGS__ )
+#  define log_memory_spamf( msg, ... ) log_debugf( HASH_MEMORY, msg, __VA_ARGS__ )
 #else
-#  define               log_memory_spamf( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_spamf( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
 #endif
 
 #if BUILD_ENABLE_MEMORY_DEBUG_LOG
-#  define               log_memory_debugf( msg, ... ) log_debugf( HASH_MEMORY, msg, __VA_ARGS__ )
+#  define log_memory_debugf( msg, ... ) log_debugf( HASH_MEMORY, msg, __VA_ARGS__ )
 #else
-#  define               log_memory_debugf( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_debugf( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
 #endif
 
 #if BUILD_ENABLE_MEMORY_LOG
-#  define               log_memory_infof( format, ... ) log_infof( HASH_MEMORY, format, __VA_ARGS__ )
-#  define               log_memory_warnf( warn, format, ... ) log_warnf( HASH_MEMORY, warn, format, __VA_ARGS__ )
-#  define               log_memory_errorf( err, format, ... ) log_errorf( HASH_MEMORY, err, format, __VA_ARGS__ )
-#  define               log_memory_panicf( err, format, ... ) log_panicf( HASH_MEMORY, err, format, __VA_ARGS__ )
+#  define log_memory_infof( format, ... ) log_infof( HASH_MEMORY, format, __VA_ARGS__ )
+#  define log_memory_warnf( warn, format, ... ) log_warnf( HASH_MEMORY, warn, format, __VA_ARGS__ )
+#  define log_memory_errorf( err, format, ... ) log_errorf( HASH_MEMORY, err, format, __VA_ARGS__ )
+#  define log_memory_panicf( err, format, ... ) log_panicf( HASH_MEMORY, err, format, __VA_ARGS__ )
 #else
-#  define               log_memory_infof( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
-#  define               log_memory_warnf( warn, msg, ... ) /*lint -save -e717 */ do { (void)sizeof( warn ); (void)sizeof( msg ); } while(0) /*lint -restore */
-#  define               log_memory_errorf( err, msg, ... ) /*lint -save -e717 */ do { error_report( ERRORLEVEL_ERROR, err ); (void)sizeof( msg ); } while(0) /*lint -restore */
-#  define               log_memory_panicf( err, msg, ... ) /*lint -save -e717 */ do { error_report( ERRORLEVEL_PANIC, err ); (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_infof(msg, ...) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_warnf(warn, msg, ...) /*lint -save -e717 */ do { (void)sizeof( warn ); (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_errorf(err, msg, ...) /*lint -save -e717 */ do { error_report( ERRORLEVEL_ERROR, err ); (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_panicf(err, msg, ...) /*lint -save -e717 */ do { error_report( ERRORLEVEL_PANIC, err ); (void)sizeof( msg ); } while(0) /*lint -restore */
 #endif
 
-#define log_memory_spam( msg )  log_memory_spamf( "%s", msg )
-#define log_memory_debug( msg ) log_memory_debugf( "%s", msg )
-#define log_memory_info( msg )  log_memory_infof( "%s", msg )
-#define log_memory_warn( msg )  log_memory_warnf( "%s", msg )
-#define log_memory_error( msg ) log_memory_errorf( "%s", msg )
-#define log_memory_panic( msg ) log_memory_panicf( "%s", msg )
+#define log_memory_spam(...)  log_memory_spamf(HASH_MEMORY, "%.*s", __VA_ARGS__)
+#define log_memory_debug(...) log_memory_debugf(HASH_MEMORY, "%.*s", __VA_ARGS__)
+#define log_memory_info(...)  log_memory_infof(HASH_MEMORY, "%.*s", __VA_ARGS__)
+#define log_memory_warn(...)  log_memory_warnf(HASH_MEMORY, "%.*s", __VA_ARGS__)
+#define log_memory_error(...) log_memory_errorf(HASH_MEMORY, "%.*s", __VA_ARGS__)
+#define log_memory_panic(...) log_memory_panicf(HASH_MEMORY, "%.*s", __VA_ARGS__)
