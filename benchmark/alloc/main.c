@@ -68,6 +68,7 @@ _run_small_allocation_loop(memory_system_t* memsys, void** ptr, size_t* size) {
 			++res.ops;
 		}
 		time_end = time_current();
+		float ms = time_ticks_to_seconds(time_diff(time_start, time_end));
 		res.elapsed += time_diff(time_start, time_end);
 		for (ipass = 0; ipass < 8192; ++ipass) {
 			memsys->deallocate(ptr[ipass]);
@@ -255,7 +256,7 @@ main_initialize(void) {
 
 int
 main_run(void* main_arg) {
-	int iloop, ipass, iseq;
+	int iloop, ipass;// , iseq;
 	unsigned int i;
 	benchmark_result_t res, res_worst, res_best;
 	thread_t thread[64];
@@ -267,6 +268,24 @@ main_run(void* main_arg) {
 
 	sys_malloc.initialize();
 	sys_memory.initialize();
+
+	//Warmup
+	for (iloop = 0; iloop < 64; ++iloop) {
+		ptr_malloc[iloop] = sys_malloc.allocate(0, (iloop+1), 0, MEMORY_PERSISTENT);
+		ptr_memory[iloop] = sys_memory.allocate(0, (iloop+1), 0, MEMORY_PERSISTENT);
+		sys_malloc.deallocate(ptr_malloc[iloop]);
+		sys_memory.deallocate(ptr_memory[iloop]);
+
+		ptr_malloc[iloop] = sys_malloc.allocate(0, sizeof(void*) * iloop, 0, MEMORY_PERSISTENT);
+		ptr_memory[iloop] = sys_memory.allocate(0, sizeof(void*) * iloop, 0, MEMORY_PERSISTENT);
+		sys_malloc.deallocate(ptr_malloc[iloop]);
+		sys_memory.deallocate(ptr_memory[iloop]);
+
+		ptr_malloc[iloop] = sys_malloc.allocate(0, 1024 * iloop, 0, MEMORY_PERSISTENT);
+		ptr_memory[iloop] = sys_memory.allocate(0, 1024 * iloop, 0, MEMORY_PERSISTENT);
+		sys_malloc.deallocate(ptr_malloc[iloop]);
+		sys_memory.deallocate(ptr_memory[iloop]);
+	}
 
 	for (iloop = 0; iloop < 64; ++iloop) {
 		ptr_malloc[iloop] = sys_malloc.allocate(0, sizeof(void*) * 8192, 0, MEMORY_PERSISTENT);
@@ -299,7 +318,7 @@ main_run(void* main_arg) {
 
 	log_infof(HASH_BENCHMARK, STRING_CONST("Running on %" PRIsize " cores"), system_hardware_threads());
 
-	log_info(HASH_BENCHMARK, STRING_CONST(""));
+	/*log_info(HASH_BENCHMARK, STRING_CONST(""));
 	log_info(HASH_BENCHMARK, STRING_CONST("Single threaded sequential small allocation"));
 	log_info(HASH_BENCHMARK, STRING_CONST("==========================================="));
 	res.elapsed = 0;
@@ -430,7 +449,7 @@ main_run(void* main_arg) {
 	}
 	log_infof(HASH_BENCHMARK, STRING_CONST("Memory time: %.4" PRIreal "s : %u ops/s"),
 	          time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
+	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));*/
 
 	log_info(HASH_BENCHMARK, STRING_CONST(""));
 	log_info(HASH_BENCHMARK, STRING_CONST("Multi threaded sequential small allocation"));

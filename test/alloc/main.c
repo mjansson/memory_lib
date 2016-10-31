@@ -20,6 +20,8 @@
 #include <memory/memory.h>
 #include <memory/log.h>
 
+#include <stdio.h>
+
 static application_t
 test_alloc_application(void) {
 	application_t app;
@@ -189,10 +191,9 @@ allocator_thread(void* argp) {
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				EXPECT_NE(addr[icheck], addr[ipass]);
 				if (addr[icheck] < addr[ipass])
-					EXPECT_LT(pointer_offset(addr[icheck], cursize),
-					          addr[ipass]);     //LT since we have some bookkeeping overhead in memory manager between blocks
+					EXPECT_LE(pointer_offset(addr[icheck], cursize), addr[ipass]);
 				else if (addr[icheck] > addr[ipass])
-					EXPECT_LT(pointer_offset(addr[ipass], cursize), addr[icheck]);
+					EXPECT_LE(pointer_offset(addr[ipass], cursize), addr[icheck]);
 			}
 		}
 
@@ -243,7 +244,7 @@ DECLARE_TEST(alloc, threaded) {
 	log_memory_infof("Raw total count:  %llu", stat.allocations_total_raw);
 	log_memory_infof("Total count:      %llu", stat.allocations_total);
 #endif
-
+printf("Warm-up\n");
 	//Warm-up
 	thread_arg.memory_system = memsys;
 	thread_arg.loops = 100000;
@@ -275,6 +276,7 @@ DECLARE_TEST(alloc, threaded) {
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 	memory_statistics_reset();
 #endif
+printf("Test\n");
 
 	for (i = 0; i < num_alloc_threads; ++i) {
 		thread_initialize(thread + i, allocator_thread, &thread_arg, STRING_CONST("allocator"), THREAD_PRIORITY_NORMAL, 0);

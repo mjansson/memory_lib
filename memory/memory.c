@@ -15,1167 +15,580 @@
  */
 
 #include <foundation/foundation.h>
-
-#include <memory/types.h>
+#include <foundation/windows.h>
+#include <memory/memory.h>
 #include <memory/log.h>
 
-#if FOUNDATION_COMPILER_GCC
-#  define BITFIELD64  __extension__
-#else
-#  define BITFIELD64
-#endif
+//#define MEMORY_ASSERT       FOUNDATION_ASSERT
+#define MEMORY_ASSERT(...)
+
+#define PAGE_SIZE           4096
+#define MAX_CHUNK_SIZE      65536
+#define MAX_PAGE_COUNT      (MAX_CHUNK_SIZE/PAGE_SIZE)
+#define PAGE_MASK           (~(MAX_CHUNK_SIZE - 1))
+
+#define CHUNK_HEADER_SIZE   16
+
+#define SMALL_GRANULARITY   16
+#define SMALL_CLASS_COUNT   (((PAGE_SIZE - CHUNK_HEADER_SIZE) / 2) / SMALL_GRANULARITY)
+#define SMALL_SIZE_LIMIT    (SMALL_CLASS_COUNT * SMALL_GRANULARITY)
+
+#define MEDIUM_SIZE_LIMIT   (MAX_CHUNK_SIZE - CHUNK_HEADER_SIZE)
+#define MEDIUM_CLASS_COUNT  32
+
+#define SIZE_CLASS_COUNT    (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
+
+#define SPAN_CLASS_COUNT    (MAX_CHUNK_SIZE / PAGE_SIZE)
+
+#define pointer_offset_pages(ptr, offset) (pointer_offset((ptr), (uintptr_t)(offset) * PAGE_SIZE))
+#define pointer_diff_pages(a, b) ((int32_t)(pointer_diff((a), (b)) / PAGE_SIZE))
+
+typedef struct size_class_t size_class_t;
+typedef struct tag_t tag_t;
+typedef struct chunk_t chunk_t;
+typedef struct heap_t heap_t;
+typedef struct span_t span_t;
+
+/* ASSUMPTIONS
+   ===========
+   Chunk offsets as signed offset in number of pages
+   (actual offset is PAGE_SIZE * next_chunk). This assumes
+   the maximum distance in memory address space between
+   two different pages is less than 2^44
+
+   Assumes all virtual memory pages allocated are on a
+   PAGE_SIZE*MAX_PAGE_COUNT alignment, meaning PAGE_MASK-1
+   bits are always zero. */
+
+//! Size class descriptor
+struct size_class_t {
+	//! Size of blocks in this class
+	uint32_t size;
+	//! Number of pages to allocate for a chunk
+	uint16_t page_count;
+	//! Number of blocks in each chunk
+	uint16_t block_count;
+	//! Number of free blocks in all chunks
+	uint16_t free_count;
+	//! First free chunk for this class (offset)
+	int32_t free_chunk_list;
+	//! First full chunk for this class (offset)
+	int32_t full_chunk_list;
+};
+
+//! Memory chunk descriptor
+struct chunk_t {
+	//! Next chunk in linked list (offset)
+	int32_t next_chunk;
+	//! Previous chunk in linked list (offset)
+	int32_t prev_chunk;
+	//! Size class index
+	uint8_t size_class;
+	//! Total number of blocks in chunk
+	uint8_t block_count;
+	//! Number of free blocks in chunk
+	uint8_t free_count;
+	//! First free block
+	uint8_t free_list;
+	//! Heap ID
+	uint16_t heap_id;
+	//! Linked list of blocks (as offsets from that block minus one, meaning 0 is next consecutive block in memory)
+	//  TODO: Could be stored as a bitmap, with free list as index of 8-bit pieces with at least one free block
+	int8_t next_block[];
+};
+
+//! Thread heap
+struct heap_t {
+	//! Size classes
+	size_class_t size_class[SIZE_CLASS_COUNT];
+	//! Medium block size increments
+	size_t medium_block_increment;
+	//! Heap ID
+	uint16_t id;
+};
+
+//! Span of pages
+struct span_t {
+	//! Next span
+	span_t* next_span;
+};
+
+FOUNDATION_STATIC_ASSERT(sizeof(heap_t) <= PAGE_SIZE, "Invalid heap size");
+
+FOUNDATION_DECLARE_THREAD_LOCAL(heap_t*, heap, 0);
+
+static atomic32_t _memory_heap_id;
+static atomicptr_t _memory_span_cache[SPAN_CLASS_COUNT];
+
+static size_t
+_memory_chunk_header_size(size_t block_count) {
+	size_t header_size = sizeof(chunk_t) + block_count;
+	size_t misalignment = header_size % CHUNK_HEADER_SIZE;
+	return header_size + (misalignment ? (CHUNK_HEADER_SIZE - misalignment) : 0);
+}
 
 #if FOUNDATION_PLATFORM_WINDOWS
-//Interlocked* functions are full barrier, no need for explicit semantics
-//#  define MEMORY_ORDER_RELEASE() atomic_thread_fence_release()
-#  define MEMORY_ORDER_RELEASE() do {} while(0)
-#elif FOUNDATION_COMPILER_GCC
-//GCC __sync_* are full barrier, no need for explicit semantics
-//#  define MEMORY_ORDER_RELEASE() atomic_thread_fence_release()
-#  define MEMORY_ORDER_RELEASE() do {} while(0)
-#else
-#  error Define memory barrier/fence
+typedef long (*NtAllocateVirtualMemoryFn)(HANDLE, void**, ULONG, size_t*, ULONG, ULONG);
+static NtAllocateVirtualMemoryFn NtAllocateVirtualMemory = 0;
 #endif
-
-#define MEMORY_ALIGN_MIN                        FOUNDATION_ARCH_POINTER_SIZE
-#define MEMORY_ALIGN_MAX                        16
-
-#define MEMORY_POINTER_HIGH_MASK_BITS           6
-#define MEMORY_POINTER_LOW_MASK_BITS            6
-#define MEMORY_POINTER_BITS                     52  //Masked out 6 high and 6 low bits (ok since sizeof(descriptor)==64 and aligned to page boundaries in alloc), so (pointer<<6) to get pointer and (pointer>>6) to set pointer.
-#define MEMORY_TAG_BITS                         12  //This gives us a loop of 4096 iterations, which should be reasonably ABA safe
-#define MEMORY_CREDIT_BITS                      MEMORY_TAG_BITS
-#define MEMORY_MAX_CREDITS                      ((1<<MEMORY_CREDIT_BITS)-1)
-
-#define MEMORY_MASK_POINTER( p )                ( (uintptr_t)(p) >> MEMORY_POINTER_LOW_MASK_BITS )
-#define MEMORY_UNMASK_POINTER( m )              (void*)( (uintptr_t)(m) << MEMORY_POINTER_LOW_MASK_BITS )
-
-typedef struct _memory_anchor                   memory_anchor_t;
-typedef struct _memory_pointer                  memory_pointer_t;
-typedef struct _memory_descriptor               memory_descriptor_t;
-typedef struct _memory_sizeclass                memory_sizeclass_t;
-typedef struct _memory_heap                     memory_heap_t;
-typedef struct _memory_heap_pool                memory_heap_pool_t;
-typedef struct _memory_descriptor_list_pointer  memory_descriptor_list_pointer_t;
-
-enum {
-	MEMORY_ANCHOR_ACTIVE  = 0,
-	MEMORY_ANCHOR_FULL    = 1,
-	MEMORY_ANCHOR_PARTIAL = 2,
-	MEMORY_ANCHOR_EMPTY   = 3
-};
-
-struct _memory_anchor {
-	BITFIELD64 uint64_t                         available:12;
-	BITFIELD64 uint64_t                         count:12;
-	BITFIELD64 uint64_t                         state:2;
-	BITFIELD64 uint64_t                         tag:38;
-};
-
-typedef union {
-	memory_anchor_t                             anchor;
-	atomic64_t                                  raw;
-} memory_anchor_value_t;
-FOUNDATION_STATIC_ASSERT(sizeof(memory_anchor_t) == sizeof(uint64_t), "anchdor size");
-FOUNDATION_STATIC_ASSERT(sizeof(memory_anchor_value_t) == sizeof(uint64_t), "anchor value size");
-
-struct _memory_descriptor {
-	memory_anchor_value_t                        anchor;
-	memory_descriptor_t*                         next;
-	memory_heap_t*                               heap;
-	void*                                        superblock;
-	unsigned int                                 size;
-	unsigned int                                 max_count;
-#if FOUNDATION_ARCH_POINTER_SIZE == 4
-	char                                         pad[36];
-#else
-	char                                         pad[24];
-#endif
-};
-//The structure needs to align to 64 bytes for pointer/tag union to work with descriptor blocks
-FOUNDATION_STATIC_ASSERT((sizeof(memory_descriptor_t)&63) == 0, "descriptor size");
-
-struct _memory_descriptor_list_pointer {
-BITFIELD64 uint64_t                          pointer:MEMORY_POINTER_BITS;
-BITFIELD64 uint64_t                          tag:MEMORY_TAG_BITS;
-};
-typedef union {
-	memory_descriptor_list_pointer_t             ptr;
-	atomic64_t                                   raw;
-} memory_descriptor_pointer_t;
-FOUNDATION_STATIC_ASSERT(sizeof(memory_descriptor_list_pointer_t) == sizeof(uint64_t),
-                         "pointer size");
-FOUNDATION_STATIC_ASSERT(sizeof(memory_descriptor_pointer_t) == sizeof(uint64_t), "pointer size");
-
-struct _memory_pointer {
-BITFIELD64 uint64_t                          pointer:MEMORY_POINTER_BITS;
-BITFIELD64 uint64_t                          credits:MEMORY_CREDIT_BITS;
-};
-typedef union {
-	memory_pointer_t                             ptr;
-	atomic64_t                                   raw;
-} memory_pointer_value_t;
-FOUNDATION_STATIC_ASSERT(sizeof(memory_pointer_t) == sizeof(uint64_t), "pointer size");
-FOUNDATION_STATIC_ASSERT(sizeof(memory_pointer_value_t) == sizeof(uint64_t), "pointer size");
-
-struct _memory_sizeclass {
-	memory_descriptor_pointer_t                  partial;
-	unsigned int                                 block_size;
-	unsigned int                                 superblock_size;
-};
-
-struct _memory_heap {
-	memory_pointer_value_t                       active;
-	memory_descriptor_pointer_t                  partial;
-#if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-	atomicptr_t                                  pending_superblock;
-#endif
-	memory_sizeclass_t*                          size_class;
-};
-
-struct _memory_heap_pool {
-	memory_heap_t*                               heaps;
-};
 
 static void*
-_memory_allocate_superblock(size_t size, bool raw);
-
-static void
-_memory_free_superblock(void* superblock, size_t size);
-
-static void*
-_memory_malloc_from_active(memory_heap_t* heap);
-
-static void*
-_memory_malloc_from_partial(memory_heap_t* heap);
-
-static void*
-_memory_malloc_from_new(memory_heap_t* heap);
-
-static memory_heap_t*
-_memory_find_heap(size_t size);
-
-static memory_descriptor_t*
-_memory_allocate_descriptor(void);
-
-static void
-_memory_retire_descriptor(memory_heap_t* heap, memory_descriptor_t* descriptor);
-static void
-_memory_remove_empty_descriptor(memory_heap_t* heap, memory_descriptor_t* descriptor);
-
-static void
-_memory_heap_put_partial(memory_heap_t* heap, memory_descriptor_t* descriptor);
-
-static memory_descriptor_t*
-_memory_heap_get_partial(memory_heap_t* heap);
-
-static memory_descriptor_t*
-_memory_partial_list_get(memory_sizeclass_t* size_class);
-
-static void
-_memory_partial_list_put(memory_sizeclass_t* size_class, memory_descriptor_t* descriptor);
-
-static void
-_memory_partial_list_remove_empty(memory_sizeclass_t* size_class);
-
-static void*
-_memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint);
-
-static void*
-_memory_reallocate(void* p, uint64_t size, unsigned int align, uint64_t oldsize);
-
-static void
-_memory_deallocate(void* p);
-
-static memory_descriptor_pointer_t _memory_descriptor_available;
-static memory_sizeclass_t* _memory_sizeclass;
-static unsigned int _memory_num_sizeclass;
-static memory_heap_pool_t* _memory_heap_pool;
-static unsigned int _memory_num_heap_pool;
-static atomic32_t _memory_heap_counter;
-static memory_detailed_statistics_t _memory_statistics;
-
-#if FOUNDATION_PLATFORM_WINDOWS
-
-#include <foundation/windows.h>
-
-static void*
-_memory_allocate_superblock(size_t size, bool raw) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	atomic_incr64(&_memory_statistics.allocations_current);
-	atomic_incr64(&_memory_statistics.allocations_total);
-	atomic_add64(&_memory_statistics.allocated_current, (int64_t)size);
-	atomic_add64(&_memory_statistics.allocated_total, (int64_t)size);
-#endif
-	return VirtualAlloc(0, size, MEM_COMMIT | MEM_RESERVE /*| ( raw ? MEM_TOP_DOWN : 0 )*/,
-	                    PAGE_READWRITE);
-}
-
-static void
-_memory_free_superblock(void* ptr, size_t size) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	atomic_decr64(&_memory_statistics.allocations_current_raw);
-	atomic_add64(&_memory_statistics.allocated_current_raw, -(int64_t)size);
-#endif
-	VirtualFree(ptr, 0, MEM_RELEASE);
-}
-
-
-#elif FOUNDATION_PLATFORM_POSIX
-
-#include <foundation/posix.h>
-#include <sys/mman.h>
-
-static void*
-_memory_allocate_superblock(size_t size, bool raw) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	atomic_incr64(&_memory_statistics.allocations_current_raw);
-	atomic_incr64(&_memory_statistics.allocations_total_raw);
-	atomic_add64(&_memory_statistics.allocated_current_raw, (int64_t)size);
-	atomic_add64(&_memory_statistics.allocated_total_raw, (int64_t)size);
-#endif
-#ifndef MAP_UNINITIALIZED
-#define MAP_UNINITIALIZED 0
-#endif
-	void* block = mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED,
-	                   -1, 0);
-	return block;
-}
-
-static void
-_memory_free_superblock(void* ptr, size_t size) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	atomic_decr64(&_memory_statistics.allocations_current_raw);
-	atomic_add64(&_memory_statistics.allocated_current_raw, -(int64_t)size);
-#endif
-	munmap(ptr, size);
-}
-
-#else
-#  error Not implemented
-#endif
-
-static FOUNDATION_PURECALL memory_heap_t*
-_memory_find_heap(size_t size) {
-	unsigned int ipool;
-	unsigned int iheap;
-	memory_heap_pool_t* pool;
-
-	size += sizeof(void*);   // Make sure we can fit prefix in
-
-	ipool = atomic_incr32(&_memory_heap_counter) /*thread_id()*/ % _memory_num_heap_pool;
-	pool = _memory_heap_pool + ipool;
-
-	for (iheap = 0; iheap < _memory_num_sizeclass; ++iheap) {
-		if (pool->heaps[iheap].size_class->block_size >= size) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-			atomic_incr64(&_memory_statistics.allocations_calls_heap_pool[ipool]);
-#endif
-			return pool->heaps + iheap;
-		}
-	}
-
-	return 0;
-}
-
-//Alignment not needed, all superblocks are page aligned and blocks are at least 32 bytes
-//which results in all blocks being 32 byte aligned
-//static CONSTCALL FORCEINLINE unsigned int _memory_get_align( unsigned int align )
-//{
-//#if FOUNDATION_PLATFORM_ANDROID
-//	return align ? MEMORY_ALIGN_MAX : 0;
-//#else
-//	if( align < FOUNDATION_ARCH_POINTER_SIZE )
-//		return align ? FOUNDATION_ARCH_POINTER_SIZE : 0;
-//	align = math_align_poweroftwo( align );
-//	return ( align < MEMORY_ALIGN_MAX ) ? align : MEMORY_ALIGN_MAX;
-//#endif
-//}
-
-static void
-_memory_heap_put_partial(memory_heap_t* heap, memory_descriptor_t* descriptor) {
-	memory_descriptor_t* prev;
-	memory_descriptor_pointer_t old_partial;
-	memory_descriptor_pointer_t new_partial;
-
-	do {
-		old_partial.raw = heap->partial.raw;
-		new_partial.raw = old_partial.raw;
-		prev = MEMORY_UNMASK_POINTER(old_partial.ptr.pointer);
-		new_partial.ptr.pointer = MEMORY_MASK_POINTER(descriptor);
-		++new_partial.ptr.tag;
-	}
-	while (!atomic_cas64(&heap->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic));
-
-	if (prev)
-		_memory_partial_list_put(heap->size_class, prev);
-}
-
-static memory_descriptor_t*
-_memory_heap_get_partial(memory_heap_t* heap) {
-	memory_descriptor_t* descriptor;
-	memory_descriptor_pointer_t old_partial;
-	memory_descriptor_pointer_t new_partial;
-
-	do {
-		old_partial.raw = heap->partial.raw;
-		new_partial.raw = old_partial.raw;
-		descriptor = MEMORY_UNMASK_POINTER(old_partial.ptr.pointer);
-		if (!descriptor)
-			return _memory_partial_list_get(heap->size_class);
-		new_partial.ptr.pointer = 0;
-		++new_partial.ptr.tag;
-	}
-	while (!atomic_cas64(&heap->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic));
-
-	return descriptor;
-}
-
-static void
-_memory_partial_list_put(memory_sizeclass_t* size_class, memory_descriptor_t* descriptor) {
-	memory_descriptor_pointer_t old_partial;
-	memory_descriptor_pointer_t new_partial;
-
-	do {
-		//TODO: improve, this potentially contends too much with _partial_list_get
-		old_partial.raw = size_class->partial.raw;
-		new_partial.raw = old_partial.raw;
-		descriptor->next = MEMORY_UNMASK_POINTER(old_partial.ptr.pointer);
-		new_partial.ptr.pointer = MEMORY_MASK_POINTER(descriptor);
-		++new_partial.ptr.tag;
-	}
-	while (!atomic_cas64(&size_class->partial.raw, new_partial.raw.nonatomic,
-	                     old_partial.raw.nonatomic));
-}
-
-static memory_descriptor_t*
-_memory_partial_list_get(memory_sizeclass_t* size_class) {
-	memory_descriptor_t* descriptor;
-	memory_descriptor_pointer_t old_partial;
-	memory_descriptor_pointer_t new_partial;
-
-	do {
-		old_partial.raw = size_class->partial.raw;
-		new_partial.raw = old_partial.raw;
-		descriptor = MEMORY_UNMASK_POINTER(old_partial.ptr.pointer);
-		if (!descriptor)
-			return 0;
-		new_partial.ptr.pointer = MEMORY_MASK_POINTER(descriptor->next);
-		++new_partial.ptr.tag;
-	}
-	while (!atomic_cas64(&size_class->partial.raw, new_partial.raw.nonatomic,
-	                     old_partial.raw.nonatomic));
-
-	return descriptor;
-}
-
-static void
-_memory_partial_list_remove_empty(memory_sizeclass_t* size_class) {
-	unsigned int retired = 0;
-	bool is_empty = false;
-
-	memory_descriptor_t* descriptor;
-	memory_descriptor_t* first;
-	memory_descriptor_t* next;
-	memory_descriptor_t* last;
-	memory_descriptor_pointer_t old_partial;
-	memory_descriptor_pointer_t new_partial;
-
-	// Pre-walking the list is safe since descriptor memory is never actually deallocated and
-	// returned to system, so any pointers will be safe to read (even if it may yield false
-	// positives, which we don't care about - only means we will grab list ownership a bit too often)
-	descriptor = MEMORY_UNMASK_POINTER(size_class->partial.ptr.pointer);
-	while (descriptor && !is_empty) {
-		is_empty = (descriptor->anchor.anchor.state == MEMORY_ANCHOR_EMPTY);
-		descriptor = descriptor->next;
-	}
-
-	if (!is_empty)
-		return;
-
-	//TODO: Potentially improve this, in order to maintain thread safety we grab ownership of
-	//      entire list by replacing head pointer with 0, then modify and free up the descriptors
-	//      in the local list, and finally restoring the partial descriptors we got left in list
-	//      to the size class partial list
-	do {
-		old_partial.raw = size_class->partial.raw;
-		new_partial.raw = old_partial.raw;
-		descriptor = MEMORY_UNMASK_POINTER(old_partial.ptr.pointer);
-		if (!descriptor)
-			return;
-		new_partial.ptr.pointer = 0;
-		++new_partial.ptr.tag;
-	}
-	while (!atomic_cas64(&size_class->partial.raw, new_partial.raw.nonatomic,
-	                     old_partial.raw.nonatomic));
-
-	first = descriptor;
-	last = 0;
-
-	while (descriptor) {
-		next = descriptor->next;
-
-		if (descriptor->anchor.anchor.state == MEMORY_ANCHOR_EMPTY) {
-			if (last)
-				last->next = next;
-			if (first == descriptor)
-				first = next;
-
-			_memory_retire_descriptor(descriptor->heap, descriptor);
-			++retired;
-		}
-		else {
-			last = descriptor;
-		}
-		descriptor = next;
-	}
-
-	if (last) do {
-			old_partial.raw = size_class->partial.raw;
-			new_partial.raw = old_partial.raw;
-			last->next = MEMORY_UNMASK_POINTER(old_partial.ptr.pointer);
-			new_partial.ptr.pointer = MEMORY_MASK_POINTER(first);
-			++new_partial.ptr.tag;
-		}
-		while (!atomic_cas64(&size_class->partial.raw, new_partial.raw.nonatomic,
-		                     old_partial.raw.nonatomic));
-
-	log_memory_spamf("<< _memory_partial_list_remove_empty( %u ) : %u", size_class->block_size,
-	                 retired);
-}
-
-static memory_descriptor_t*
-_memory_allocate_descriptor(void) {
-	memory_descriptor_t* descriptor;
-	memory_descriptor_t* next;
-
-	memory_descriptor_pointer_t new_available;
-	memory_descriptor_pointer_t old_available;
-
-	//Grab existing
-	do {
-		old_available.raw = _memory_descriptor_available.raw;
-		new_available.raw = old_available.raw;
-		descriptor = MEMORY_UNMASK_POINTER(old_available.ptr.pointer);
-		if (!descriptor)
-			break;
-		new_available.ptr.pointer = MEMORY_MASK_POINTER(descriptor->next);
-		++new_available.ptr.tag;
-		MEMORY_ORDER_RELEASE();
-		if (atomic_cas64(&_memory_descriptor_available.raw, new_available.raw.nonatomic,
-		                 old_available.raw.nonatomic)) {
-			if (descriptor)
-				return descriptor;
-		}
-	}
-	while (descriptor);
-
-	//Allocate new block of descriptors
-	{
-		size_t i;
-		//TODO: Proper page size from system info
-		int page_size = 4096;
-		size_t size = page_size * 16;
-		size_t num_descriptors;
-		memory_descriptor_t* first;
-		memory_descriptor_t* last;
-		void* descblock = _memory_allocate_superblock(size, true);
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		atomic_incr64(&_memory_statistics.allocations_new_descriptor_superblock);
-#endif
-		//Align pointer to 64 bytes
-		if ((uintptr_t)descblock & 63) {
-			descblock = (char*)descblock + (64 - ((uintptr_t)descblock & 63));
-			num_descriptors = (size - 64) / sizeof(memory_descriptor_t);
-		}
-		else {
-			num_descriptors = size / sizeof(memory_descriptor_t);
-		}
-
-		descriptor = descblock;
-		next = descriptor;
-		for (i = 0; i < num_descriptors - 1; ++i) {
-			next->next = (memory_descriptor_t*)pointer_offset(next, sizeof(memory_descriptor_t));
-			next = (memory_descriptor_t*)next->next;
-		}
-		last = next;
-		first = (memory_descriptor_t*)descriptor->next;
-
+_memory_allocate_raw(size_t page_count) {
+	//Check if we can find a span that matches the request
+	if (page_count < SPAN_CLASS_COUNT) {
+		span_t* span;
+		atomic_thread_fence_acquire();
 		do {
-			old_available.raw = _memory_descriptor_available.raw;
-			new_available.raw = old_available.raw;
-			new_available.ptr.pointer = MEMORY_MASK_POINTER(first);
-			++new_available.ptr.tag;
-			last->next = MEMORY_UNMASK_POINTER(old_available.ptr.pointer);
-			MEMORY_ORDER_RELEASE();
+			span = atomic_load_ptr(&_memory_span_cache[page_count]);
+			if (!span)
+				break;
 		}
-		while (!atomic_cas64(&_memory_descriptor_available.raw, new_available.raw.nonatomic,
-		                     old_available.raw.nonatomic));
-		//NOTE: if memory conservation is more important, free superblock here and retry instead of cas-looping and setting pointer
+		while (!atomic_cas_ptr(&_memory_span_cache[page_count], span->next_span, span));
+
+		if (span)
+			return span;
 	}
 
-	log_memory_debugf("<< _memory_allocate_descriptor() : %p", descriptor);
-	return descriptor;
-}
+	void* pages_ptr = 0;
 
-static void
-_memory_retire_descriptor(memory_heap_t* heap, memory_descriptor_t* descriptor) {
-	memory_descriptor_pointer_t new_available;
-	memory_descriptor_pointer_t old_available;
+#if FOUNDATION_PLATFORM_WINDOWS
+	pages_ptr = VirtualAlloc(0, PAGE_SIZE * page_count, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	MEMORY_ASSERT(!((uintptr_t)pages_ptr & 0xFFFF));
 
-	descriptor->heap = 0;
-
-	if (descriptor->superblock) {
-#if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-		if (heap->pending_superblock.nonatomic ||
-		        !atomic_cas_ptr(&heap->pending_superblock, descriptor->superblock, 0))
+	/* For controlling high order bits
+	long vmres = NtAllocateVirtualMemory(((HANDLE)(LONG_PTR)-1), &pages_ptr, 1, &allocate_size,
+	                                 MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	*/
 #endif
-			_memory_free_superblock(descriptor->superblock, heap->size_class->superblock_size);
-	}
-	descriptor->superblock = 0;
 
-	do {
-		old_available.raw = _memory_descriptor_available.raw;
-		new_available.raw = old_available.raw;
-		descriptor->next = MEMORY_UNMASK_POINTER(old_available.ptr.pointer);
-		new_available.ptr.pointer = MEMORY_MASK_POINTER(descriptor);
-		++new_available.ptr.tag;
-		MEMORY_ORDER_RELEASE();
-	}
-	while (!atomic_cas64(&_memory_descriptor_available.raw, new_available.raw.nonatomic,
-	                     old_available.raw.nonatomic));
+	return pages_ptr;
 }
 
 static void
-_memory_remove_empty_descriptor(memory_heap_t* heap, memory_descriptor_t* descriptor) {
-	memory_descriptor_pointer_t old_partial;
-	memory_descriptor_pointer_t new_partial;
-
-	//Retire if it was heap partial and we manage to remove it
-	old_partial.raw = heap->partial.raw;
-	if (old_partial.ptr.pointer == MEMORY_MASK_POINTER(descriptor)) {
-		new_partial.ptr.pointer = 0;
-		new_partial.ptr.tag = old_partial.ptr.tag + 1;
-		if (atomic_cas64(&heap->partial.raw, new_partial.raw.nonatomic, old_partial.raw.nonatomic)) {
-			if (descriptor->anchor.anchor.state == MEMORY_ANCHOR_EMPTY)
-				_memory_retire_descriptor(heap, descriptor);
-			else
-				_memory_heap_put_partial(heap, descriptor);
+_memory_deallocate_raw(void* ptr, size_t page_count) {
+	if (page_count < SPAN_CLASS_COUNT) {
+		//Insert into global span cache
+		span_t* span = ptr;
+		atomic_thread_fence_acquire();
+		do {
+			span->next_span = atomic_load_ptr(&_memory_span_cache[page_count]);
 		}
+		while (!atomic_cas_ptr(&_memory_span_cache[page_count], span, span->next_span));
+
+		//TODO: Free spans if total amount of memory for class > threshold
+
 		return;
 	}
 
-	_memory_partial_list_remove_empty(heap->size_class);
+#if FOUNDATION_PLATFORM_WINDOWS
+	VirtualFree(ptr, 0, MEM_RELEASE);
+#endif
 }
 
-static bool
-_memory_update_active_superblock(memory_heap_t* heap, memory_descriptor_t* descriptor,
-                                 unsigned int more_credits) {
-	memory_pointer_value_t new_active;
-	memory_anchor_value_t new_anchor, old_anchor;
+static void
+_memory_adjust_size_class(heap_t* heap, size_t iclass) {
+	size_t block_size = heap->size_class[iclass].size;
+	size_t block_count = ((PAGE_SIZE - sizeof(chunk_t)) / (block_size + 1));
+	size_t header_size = _memory_chunk_header_size(block_count);
+	if (header_size + (block_size * block_count) > PAGE_SIZE)
+		--block_count;
+	size_t wasted = (PAGE_SIZE - header_size) - (block_size * block_count);
 
-	new_active.ptr.pointer = MEMORY_MASK_POINTER(descriptor);
-	new_active.ptr.credits = more_credits - 1;
-	if (atomic_cas64(&heap->active.raw, new_active.raw.nonatomic, 0))
-		return true;
+	size_t page_size_counter = 1;
+	size_t overhead = wasted + header_size;
 
-	//Someone else installed another active superblock
-	//Return credits and make superblock partial
-	do {
-		old_anchor.raw = descriptor->anchor.raw;
-		new_anchor.raw = old_anchor.raw;
-		new_anchor.anchor.count += more_credits;
-		new_anchor.anchor.state = MEMORY_ANCHOR_PARTIAL;
+	float current_factor = (float)overhead / ((float)block_count * (float)block_size);
+	float best_factor = current_factor;
+	size_t best_wasted = wasted;
+	size_t best_overhead = overhead;
+	size_t best_page_count = page_size_counter;
+	size_t best_block_count = block_count;
+
+	while ((((float)wasted / (float)block_count) > ((float)block_size / 32.0f))) {
+		size_t page_size = PAGE_SIZE * (++page_size_counter);
+		if (page_size > PAGE_SIZE*MAX_PAGE_COUNT)
+			break;
+		block_count = ((page_size - sizeof(chunk_t)) / (block_size + 1));
+		if (block_count > 255)
+			break;
+		header_size = _memory_chunk_header_size(block_count);
+		if (header_size + (block_size * block_count) > page_size)
+			--block_count;
+		wasted = (page_size - header_size) - (block_size * block_count);
+		overhead = wasted + header_size;
+
+		current_factor = (float)overhead / ((float)block_count * (float)block_size);
+		if (current_factor < best_factor) {
+			best_factor = current_factor;
+			best_page_count = page_size_counter;
+			best_wasted = wasted;
+			best_overhead = overhead;
+			best_block_count = block_count;
+		}
 	}
-	while (!atomic_cas64(&descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic));
+	log_memory_spamf("Size class %" PRIsize ": %" PRIsize " pages, %" PRIsize " bytes, %" PRIsize
+	                 " blocks of %" PRIsize " bytes (%" PRIsize " wasted, %" PRIsize " overhead, %.2f%%)",
+	                 iclass, best_page_count, PAGE_SIZE * best_page_count, best_block_count, block_size, best_wasted,
+	                 best_overhead, 100.0f * best_factor);
 
-	_memory_heap_put_partial(heap, descriptor);
+	heap->size_class[iclass].page_count = (uint16_t)best_page_count;
+	heap->size_class[iclass].block_count = (uint16_t)best_block_count;
 
-	return false;
+	//Check if previous size class can be merged
+	if ((iclass > 0) &&
+	        (heap->size_class[iclass-1].page_count == heap->size_class[iclass].page_count) &&
+	        (heap->size_class[iclass-1].block_count == heap->size_class[iclass].block_count)) {
+		log_memory_spamf("  merge previous size class");
+		heap->size_class[iclass-1].size = 0;
+	}
+}
+
+static heap_t*
+_memory_allocate_heap(void) {
+	size_t iclass;
+	heap_t* heap = _memory_allocate_raw(1);
+
+	for (iclass = 0; iclass < SMALL_CLASS_COUNT; ++iclass) {
+		size_t size = (iclass + 1) * SMALL_GRANULARITY;
+		heap->size_class[iclass].size = (uint16_t)size;
+		heap->size_class[iclass].free_chunk_list = 0;
+		heap->size_class[iclass].full_chunk_list = 0;
+		heap->size_class[iclass].free_count = 0;
+
+		_memory_adjust_size_class(heap, iclass);
+	}
+
+	size_t increment = (MAX_CHUNK_SIZE - CHUNK_HEADER_SIZE - SMALL_SIZE_LIMIT) /
+	                   MEDIUM_CLASS_COUNT;
+	if (increment % 16)
+		increment += (16 - (increment % 16));
+
+	heap->medium_block_increment = increment;
+
+	for (iclass = 0; iclass < MEDIUM_CLASS_COUNT; ++iclass) {
+		size_t size = SMALL_SIZE_LIMIT + (iclass + 1) * increment;
+		heap->size_class[SMALL_CLASS_COUNT + iclass].size = (uint16_t)size;
+		heap->size_class[SMALL_CLASS_COUNT + iclass].free_chunk_list = 0;
+		heap->size_class[SMALL_CLASS_COUNT + iclass].full_chunk_list = 0;
+		heap->size_class[SMALL_CLASS_COUNT + iclass].free_count = 0;
+
+		_memory_adjust_size_class(heap, SMALL_CLASS_COUNT + iclass);
+	}
+
+	heap->id = (uint16_t)atomic_incr32(&_memory_heap_id);
+
+	return heap;
 }
 
 static void*
-_memory_malloc_from_active(memory_heap_t* heap) {
-	memory_pointer_value_t old_active, new_active;
-	memory_anchor_value_t old_anchor, new_anchor;
-	memory_descriptor_t* descriptor;
-	void* address;
-	unsigned int more_credits;
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-	atomic_incr64(&_memory_statistics.allocations_calls_active);
-#endif
-
-	do { //Reserve block
-		old_active.raw = heap->active.raw;
-		if (!old_active.ptr.pointer) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-			atomic_incr64(&_memory_statistics.allocations_calls_active_no_active);
-#endif
-			return 0;
-		}
-		if (!old_active.ptr.credits)
-			new_active.raw.nonatomic = 0;
-		else {
-			new_active.raw = old_active.raw;
-			--new_active.ptr.credits;
-		}
+_memory_allocate_from_heap(heap_t* heap, size_t size) {
+	size_t class_idx = (size ? (size-1) : 0) / SMALL_GRANULARITY;
+	if (class_idx >= SMALL_CLASS_COUNT) {
+		MEMORY_ASSERT(size > SMALL_SIZE_LIMIT);
+		class_idx = SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT) / heap->medium_block_increment);
 	}
-	while (!atomic_cas64(&heap->active.raw, new_active.raw.nonatomic, old_active.raw.nonatomic));
 
-	//Pop block
-	descriptor = MEMORY_UNMASK_POINTER(old_active.ptr.pointer);
+	size_class_t* size_class = heap->size_class + class_idx;
+	while (size_class->size < size)
+		size_class = heap->size_class + (++class_idx);
 
-	//Descriptor may transition heaps if punted to heap partial and then to size_class partial,
-	//and finally picked up by another heap.
-	//FOUNDATION_ASSERT_MSG( descriptor->heap == heap, "Descriptor heap mismatch during alloc from active" );
+	size_t header_size = _memory_chunk_header_size(size_class->block_count);
 
-	more_credits = 0;
-	do {
-		//State may be ACTIVE, PARTIAL or FULL
-		unsigned int next;
-		old_anchor.raw = descriptor->anchor.raw;
-		new_anchor.raw = old_anchor.raw;
+	chunk_t* chunk = 0;
+	if (size_class->free_chunk_list) {
+		chunk = pointer_offset_pages(heap, size_class->free_chunk_list);
+		MEMORY_ASSERT(chunk->free_count);
+	}
+	if (!chunk) {
+		//Allocate a memory page as new chunk
+		log_memory_spamf("Allocated a new chunk for size class %" PRIsize " (size %" PRIsize " -> %" PRIsize
+		                 ") : %" PRIsize " bytes, %" PRIsize " blocks\n",
+		                 class_idx, size, (size_t)size_class->size, PAGE_SIZE * (size_t)size_class->page_count,
+		                 (size_t)size_class->block_count);
+		chunk = _memory_allocate_raw(size_class->page_count);
+		MEMORY_ASSERT(((uintptr_t)chunk & ~PAGE_MASK) == 0);
+		memset(chunk, 0, header_size);
+		chunk->size_class = (uint8_t)class_idx;
+		chunk->block_count = (uint8_t)size_class->block_count;
+		chunk->free_count = chunk->block_count;
+		chunk->heap_id = heap->id;
 
-#if BUILD_USE_PRE_ALIGN
-		address = (char*)descriptor->superblock + (((old_anchor.anchor.available + 1) * descriptor->size) -
-		                                           sizeof(void*));
-#else
-		address = (char*)descriptor->superblock + (old_anchor.anchor.available * descriptor->size);
-#endif
-		next = *(unsigned int*)address;
-		new_anchor.anchor.available = next;
-		++new_anchor.anchor.tag;
+		size_class->free_count += size_class->block_count;
+		size_class->free_chunk_list = pointer_diff_pages(chunk, heap);
+		MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == chunk);
+	}
 
-		if (old_active.ptr.credits == 0) {
-			if (old_anchor.anchor.count == 0) {
-				new_anchor.anchor.state = MEMORY_ANCHOR_FULL;
+	MEMORY_ASSERT(chunk->free_count);
+	MEMORY_ASSERT(size_class->free_count);
+
+	//Allocate from chunk
+	int block_idx = chunk->free_list;
+	int next_offset = chunk->next_block[block_idx] + 1;
+	--chunk->free_count;
+	--size_class->free_count;
+
+	if (!chunk->free_count) {
+		//Move chunk to start of full chunks
+		if (size_class->free_chunk_list == (int32_t)pointer_diff_pages(chunk, heap)) {
+			if (chunk->next_chunk) {
+				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+				size_class->free_chunk_list = (int32_t)pointer_diff_pages(next_chunk, heap);
+				MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == next_chunk);
 			}
 			else {
-				more_credits = (old_anchor.anchor.count < MEMORY_MAX_CREDITS) ? (unsigned int)
-				               old_anchor.anchor.count : MEMORY_MAX_CREDITS;
-				new_anchor.anchor.count -= more_credits;
+				size_class->free_chunk_list = 0;
 			}
 		}
-	}
-	while (!atomic_cas64(&descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic));
-
-	if ((old_active.ptr.credits == 0) && (old_anchor.anchor.count > 0)) {
-		bool active = _memory_update_active_superblock(heap, descriptor, more_credits);
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		if (active)
-			atomic_incr64(&_memory_statistics.allocations_calls_active_to_active);
-		else
-			atomic_incr64(&_memory_statistics.allocations_calls_active_to_partial);
-#endif
-	}
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-	else if (old_active.ptr.credits == 0) {
-		atomic_incr64(&_memory_statistics.allocations_calls_active_to_full);
-	}
-	else {
-		atomic_incr64(&_memory_statistics.allocations_calls_active_credits);
-	}
-#endif
-
-	*(void**)address = descriptor;
-	address = pointer_offset(address, sizeof(void*));
-	//FOUNDATION_ASSERT_MSG( ( (uintptr_t)address & 31 ) == 0, "Address align failure" );
-
-	return address;
-}
-
-static void*
-_memory_malloc_from_partial(memory_heap_t* heap) {
-	memory_anchor_value_t old_anchor, new_anchor;
-	void* address;
-	memory_descriptor_t* descriptor;
-	unsigned int more_credits;
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-	atomic_incr64(&_memory_statistics.allocations_calls_partial);
-#endif
-
-retry:
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-	atomic_incr64(&_memory_statistics.allocations_calls_partial_tries);
-#endif
-
-	descriptor = _memory_heap_get_partial(heap);
-	if (!descriptor) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		atomic_incr64(&_memory_statistics.allocations_calls_partial_no_descriptor);
-#endif
-		return 0;
-	}
-
-	descriptor->heap = heap;
-	do {
-		//Reserve blocks
-		old_anchor.raw = descriptor->anchor.raw;
-		new_anchor.raw = old_anchor.raw;
-		if (old_anchor.anchor.state == MEMORY_ANCHOR_EMPTY) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-			atomic_incr64(&_memory_statistics.allocations_calls_partial_to_retire);
-#endif
-			_memory_retire_descriptor(heap, descriptor);
-			goto retry;
+		else {
+			//If this chunk was not first in free_chunk_list, it must have a previous chunk in list
+			MEMORY_ASSERT(chunk->prev_chunk);
+			chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
+			if (chunk->next_chunk) {
+				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+				prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
+				next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
+			}
+			else {
+				prev_chunk->next_chunk = 0;
+			}
 		}
-		else if (old_anchor.anchor.state != MEMORY_ANCHOR_PARTIAL) {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-			atomic_incr64(&_memory_statistics.allocations_calls_partial_no_descriptor);
-#endif
-			return 0;
+
+		if (size_class->full_chunk_list) {
+			chunk_t* next_chunk = pointer_offset_pages(heap, size_class->full_chunk_list);
+			chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, chunk);
+			next_chunk->prev_chunk = (int32_t)pointer_diff_pages(chunk, next_chunk);
 		}
 		else {
-			//old anchor state must be PARTIAL, count must be > 0
-			FOUNDATION_ASSERT_MSGFORMAT(old_anchor.anchor.state == MEMORY_ANCHOR_PARTIAL,
-			                            "Unexpected anchor state, got %u, wanted %u", (unsigned int)old_anchor.anchor.state,
-			                            MEMORY_ANCHOR_PARTIAL);
-			more_credits = (old_anchor.anchor.count - 1 < MEMORY_MAX_CREDITS ? (unsigned int)
-			                old_anchor.anchor.count - 1 : MEMORY_MAX_CREDITS);
+			chunk->next_chunk = 0;
 		}
-		new_anchor.anchor.count -= more_credits + 1;
-		new_anchor.anchor.state = (more_credits > 0) ? MEMORY_ANCHOR_ACTIVE : MEMORY_ANCHOR_FULL;
+		size_class->full_chunk_list = (int32_t)pointer_diff_pages(chunk, heap);
 
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		if (new_anchor.anchor.state == MEMORY_ANCHOR_ACTIVE)
-			atomic_incr64(&_memory_statistics.allocations_calls_partial_to_active);
-		else
-			atomic_incr64(&_memory_statistics.allocations_calls_partial_to_full);
-#endif
-
-	}
-	while (!atomic_cas64(&descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic));
-
-	do {
-		//Pop reserved block
-		old_anchor.raw = descriptor->anchor.raw;
-		new_anchor.raw = old_anchor.raw;
-#if BUILD_USE_PRE_ALIGN
-		address = (char*)descriptor->superblock + (((old_anchor.anchor.available + 1) * descriptor->size) -
-		                                           sizeof(void*));
-#else
-		address = (char*)descriptor->superblock + (old_anchor.anchor.available * descriptor->size);
-#endif
-		new_anchor.anchor.available = *(unsigned int*)address;
-		++new_anchor.anchor.tag;
-	}
-	while (!atomic_cas64(&descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic));
-
-	if (more_credits > 0)
-		_memory_update_active_superblock(heap, descriptor, more_credits);
-
-	*(void**)address = descriptor;
-	address = pointer_offset(address, sizeof(void*));
-	//FOUNDATION_ASSERT_MSG( ( (uintptr_t)address & 31 ) == 0, "Address align failure" );
-
-	return address;
-}
-
-static void*
-_memory_malloc_from_new(memory_heap_t* heap) {
-	void* address;
-	memory_pointer_value_t new_active;
-	unsigned int credits;
-	unsigned int i;
-	memory_descriptor_t* descriptor;
-	bool from_pending = true;
-	uintptr_t offset = 0;
-	void* base_address;
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-	atomic_incr64(&_memory_statistics.allocations_calls_new_block);
-#endif
-
-	descriptor = _memory_allocate_descriptor();
-	descriptor->heap = heap;
-	descriptor->superblock = 0;
-	descriptor->anchor.anchor.available = 1; //We're allocating the first available block at index 0
-	descriptor->size = heap->size_class->block_size;
-#if BUILD_USE_PRE_ALIGN
-	descriptor->max_count = (heap->size_class->superblock_size / descriptor->size) -
-	                        1;   //Use first block for alignment and clobber watch overhead
-#else
-	descriptor->max_count = (heap->size_class->superblock_size / descriptor->size);
-#endif
-
-	credits = descriptor->max_count - 1;
-	if (credits > MEMORY_MAX_CREDITS)
-		credits = MEMORY_MAX_CREDITS;
-	new_active.ptr.pointer = MEMORY_MASK_POINTER(descriptor);
-	new_active.ptr.credits = credits - 1;
-	descriptor->anchor.anchor.count = (descriptor->max_count - 1) - credits;
-	descriptor->anchor.anchor.state = MEMORY_ANCHOR_ACTIVE;
-
-	//Early out if new block was put in place by other thread
-	if (atomic_load64(&heap->active.raw) || heap->partial.ptr.pointer ||
-	        heap->size_class->partial.ptr.pointer) {
-		_memory_retire_descriptor(heap, descriptor);
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		atomic_incr64(&_memory_statistics.allocations_new_block_earlyouts);
-#endif
-		return 0;
-	}
-
-	//Try to grab any existing pending superblock
-#if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-	descriptor->superblock = atomic_loadptr(&heap->pending_superblock);
-	if (!descriptor->superblock ||
-	        !atomic_cas_ptr(&heap->pending_superblock, 0, descriptor->superblock))
-#endif
-	{
-		descriptor->superblock = _memory_allocate_superblock(heap->size_class->superblock_size, false);
-		from_pending = false;
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		atomic_incr64(&_memory_statistics.allocations_new_block_superblock);
-#endif
-	}
-
-	//Make linked list of next available block
-#if BUILD_USE_PRE_ALIGN
-	base_address = pointer_offset(descriptor->superblock, descriptor->size - sizeof(void*));
-#else
-	base_address = descriptor->superblock;
-#endif
-	for (i = 0, offset = 0; i < descriptor->max_count; ++i, offset += descriptor->size)
-		*(unsigned int*)pointer_offset(base_address, offset) = i + 1;
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-	if (from_pending)
-		atomic_incr64(&_memory_statistics.allocations_new_block_pending_hits);
-#endif
-
-	MEMORY_ORDER_RELEASE();
-	if (atomic_cas64(&heap->active.raw, new_active.raw.nonatomic, 0)) {
-		//First block in superblock reserved for alignment and clobber watch overhead
-		address = base_address;
-		*(void**)address = descriptor;
-		address = pointer_offset(address, sizeof(void*));     //Address is now (at least) 32 byte aligned
-		//FOUNDATION_ASSERT_MSG( ( (uintptr_t)address & 31 ) == 0, "Address align failure" );
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		if (from_pending)
-			atomic_incr64(&_memory_statistics.allocations_new_block_pending_success);
-		else
-			atomic_incr64(&_memory_statistics.allocations_new_block_superblock_success);
-#endif
-
-		return address;
-	}
-
-#if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-	//This is an optimization that tries to save this newly allocated (but not installed) superblock
-	//as pending, so next new allocation can grab it immediately. This (potentially) saves us
-	//one free and one alloc of a new superblock.
-	if (atomic_cas_ptr(&heap->pending_superblock, descriptor->superblock, 0)) {
-		descriptor->superblock = 0;
-		_memory_retire_descriptor(heap, descriptor);
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		if (from_pending)
-			atomic_incr64(&_memory_statistics.allocations_new_block_pending_stores);
-		else
-			atomic_incr64(&_memory_statistics.allocations_new_block_superblock_stores);
-#endif
-		return 0;
-	}
-#endif
-
-	_memory_free_superblock(descriptor->superblock, heap->size_class->superblock_size);
-
-	descriptor->superblock = 0;
-	_memory_retire_descriptor(heap, descriptor);
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-	if (from_pending)
-		atomic_incr64(&_memory_statistics.allocations_new_block_pending_deallocations);
-	else
-		atomic_incr64(&_memory_statistics.allocations_new_block_superblock_deallocations);
-#endif
-
-	return 0;
-}
-
-static void*
-_memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint) {
-	void* ptr = 0;
-	memory_heap_t* heap = _memory_find_heap((size_t)size);
-	if (!heap) {
-		uintptr_t* block;
-
-		//Large block, allocate from OS virtual memory directly and set low bit as identifier in prefix
-		size += sizeof(void*);
-		if (size & 1)
-			++size;
-
-		block = _memory_allocate_superblock((size_t)size, true);
-		*block = (uintptr_t)size | 1;
-
-		ptr = pointer_offset(block, sizeof(void*));
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		atomic_incr64(&_memory_statistics.allocations_calls_oversize);
-#endif
+		MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
 	}
 	else {
-		size = heap->size_class->block_size;
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-		atomic_incr64(&_memory_statistics.allocations_calls_heap);
-#endif
-
-		do {
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-			atomic_incr64(&_memory_statistics.allocations_calls_heap_loops);
-#endif
-
-			ptr = _memory_malloc_from_active(heap);
-			if (ptr) break;
-			ptr = _memory_malloc_from_partial(heap);
-			if (ptr) break;
-			ptr = _memory_malloc_from_new(heap);
-		}
-		while (!ptr);
+		MEMORY_ASSERT(next_offset);
+		chunk->free_list = (uint8_t)(block_idx + next_offset);
 	}
 
-	if (ptr && (hint & MEMORY_ZERO_INITIALIZED))
-		memset(ptr, 0, (size_t)size);
+	log_memory_spamf("Allocated block %d of %u, new first free block is %u (remains %u)\n",
+	                 block_idx + 1, (unsigned int)chunk->block_count, (unsigned int)chunk->free_list,
+	                 (unsigned int)chunk->free_count);
 
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	atomic_add64(&_memory_statistics.allocated_current, size);
-	atomic_add64(&_memory_statistics.allocated_total, size);
-	atomic_incr64(&_memory_statistics.allocations_current);
-	atomic_incr64(&_memory_statistics.allocations_total);
-#endif
-	return ptr;
-}
+	size_t offset = header_size + (block_idx * size_class->size);
+	MEMORY_ASSERT(offset < MAX_CHUNK_SIZE);
 
-static void*
-_memory_reallocate(void* p, uint64_t size, unsigned int align, uint64_t oldsize) {
-	uint64_t need_size;
-	void* raw_descriptor;
-	memory_descriptor_t* descriptor;
-	memory_heap_t* heap;
-	void* block;
+	void* allocated_memory = pointer_offset(chunk, offset);
+	log_memory_spamf("Allocated pointer is %" PRIfixPTR " (%" PRIsize " -> %u bytes, offset %" PRIsize
+	                 ")\n", (uintptr_t)allocated_memory, size, size_class->size, offset);
 
-	if (p) {
-		//Check if we can fit new block in old
-		void* p_raw = (uintptr_t*)p - 1; //Back up to prefix
-		if ((*((uintptr_t*)p_raw)) & 1) {
-			if ((size <= oldsize) && (size >= (oldsize >> 1)))
-				return p;
-		}
-		else {
-			raw_descriptor = *(void**)p_raw;
-			descriptor = (memory_descriptor_t*)raw_descriptor;
-			heap = descriptor->heap;
-			need_size = size + sizeof(void*);
-			if ((need_size <= heap->size_class->block_size) &&
-			        (need_size >= (heap->size_class->block_size >> 1)))
-				return p;
-		}
-	}
-
-	block = _memory_allocate(memory_context(), size, align, MEMORY_PERSISTENT);
-	if (block && p && oldsize)
-		memcpy(block, p, (size_t)((size < oldsize) ? size : oldsize));
-	_memory_deallocate(p);
-	return block;
+	return allocated_memory;
 }
 
 static void
-_memory_deallocate(void* p) {
-	uint64_t size = 0;
-	void* raw_descriptor;
-	void* superblock;
-	void* base_address;
-	memory_descriptor_t* descriptor;
-	memory_anchor_value_t new_anchor, old_anchor;
-	memory_heap_t* heap;
+_memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
+	size_t class_idx = chunk->size_class;
+	size_class_t* size_class = heap->size_class + class_idx;
 
-	if (!p)
-		return;
+	size_t header_size = _memory_chunk_header_size(chunk->block_count);
 
-	p = (uintptr_t*)p - 1; //Back up to prefix
+	void* block_start = pointer_offset(chunk, header_size);
+	size_t block_idx = pointer_diff(p, block_start) / size_class->size;
 
-	if ((*((uintptr_t*)p)) &
-	        1) { //A descriptor pointer never has low bit set, used as identifier for large block allocated directly from OS
-		size = (*(uintptr_t*)p) - 1;
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-		atomic_add64(&_memory_statistics.allocated_current, -(int64_t)size);
-		atomic_decr64(&_memory_statistics.allocations_current);
-#endif
-		_memory_free_superblock(p, (size_t)size);
-		log_memory_debugf("<< memory_deallocate() : superblock", p);
-		return;
-	}
+	bool was_full = !chunk->free_count;
 
-	raw_descriptor = *(void**)p;
-	//FOUNDATION_ASSERT_MSGFORMAT( (uintptr_t)raw_descriptor > 0x10000, "Bad raw pointer: " STRING_FORMAT_POINTER, raw_descriptor );
-	descriptor = (memory_descriptor_t*)raw_descriptor;
-
-	superblock = descriptor->superblock;
-	heap = descriptor->heap;
-#if BUILD_USE_PRE_ALIGN
-	base_address = pointer_offset(superblock, descriptor->size - sizeof(void*));
-#else
-	base_address = superblock;
-#endif
-	do {
-		old_anchor.raw = descriptor->anchor.raw;
-		new_anchor.raw = old_anchor.raw;
-		*(unsigned int*)p = (unsigned int)old_anchor.anchor.available;
-		new_anchor.anchor.available = ((uintptr_t)p - (uintptr_t)base_address) / descriptor->size;
-		if (old_anchor.anchor.state == MEMORY_ANCHOR_FULL)
-			new_anchor.anchor.state = MEMORY_ANCHOR_PARTIAL;
-		if (old_anchor.anchor.count == (descriptor->max_count - 1)) {
-			MEMORY_ORDER_RELEASE();
-			new_anchor.anchor.state = MEMORY_ANCHOR_EMPTY;
+	if (was_full) {
+		//Remove chunk from list of full chunks
+		if (size_class->full_chunk_list == (int32_t)pointer_diff_pages(chunk, heap)) {
+			if (chunk->next_chunk) {
+				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+				size_class->full_chunk_list = (int32_t)pointer_diff_pages(next_chunk, heap);
+			}
+			else {
+				size_class->full_chunk_list = 0;
+			}
 		}
-		else
-			++new_anchor.anchor.count;
-		MEMORY_ORDER_RELEASE();
+		else {
+			//If this chunk was not first in full_chunk_list, it must have a previous chunk in list
+			MEMORY_ASSERT(chunk->prev_chunk);
+			chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
+			if (chunk->next_chunk) {
+				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+				prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
+				next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
+			}
+			else {
+				prev_chunk->next_chunk = 0;
+			}
+		}
 	}
-	while (!atomic_cas64(&descriptor->anchor.raw, new_anchor.raw.nonatomic, old_anchor.raw.nonatomic));
 
-	if (new_anchor.anchor.state == MEMORY_ANCHOR_EMPTY)
-		_memory_remove_empty_descriptor(heap, descriptor);
-	else if (old_anchor.anchor.state == MEMORY_ANCHOR_FULL)
-		_memory_heap_put_partial(heap, descriptor);
+	++size_class->free_count;
+	++chunk->free_count;
+	if ((chunk->free_count == chunk->block_count) && size_class->free_chunk_list &&
+	        (size_class->free_count > (size_class->block_count * 2)) &&
+	        (size_class->free_count > 8)) {
+		//Chunk went from full or partial free -> free
+		//Check if there is another chunk with available blocks, if so return pages
+		//From free_chunk_list check above we know there is at least one chunk at least partial free
+		MEMORY_ASSERT(was_full || (size_class->free_chunk_list != chunk_offset) || chunk->next_chunk);
+		int32_t chunk_offset = (int32_t)pointer_diff_pages(chunk, heap);
+		if (size_class->free_chunk_list == chunk_offset) {
+			MEMORY_ASSERT(chunk->next_chunk);
+			chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+			size_class->free_chunk_list = (int32_t)pointer_diff_pages(next_chunk, heap);
+			MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == next_chunk);
+		}
+		else if (!was_full) {
+			//If this chunk was not first in free_chunk_list, it must have a previous chunk in list
+			MEMORY_ASSERT(chunk->prev_chunk);
+			chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
+			if (chunk->next_chunk) {
+				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+				prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
+				next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
+			}
+			else {
+				prev_chunk->next_chunk = 0;
+			}
+		}
 
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	atomic_add64(&_memory_statistics.allocated_current, -(int64_t)heap->size_class->block_size);
-	atomic_decr64(&_memory_statistics.allocations_current);
-#endif
+		MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
+
+		size_class->free_count -= size_class->block_count;
+
+		_memory_deallocate_raw(chunk, size_class->page_count);
+
+		return;
+	}
+
+	//Link in block in free list (0 offset means next block, hence the +1 in the subtraction)
+	chunk->next_block[block_idx] = (int8_t)chunk->free_list - ((int8_t)block_idx + 1);
+	chunk->free_list = (uint8_t)block_idx;
+
+	//Check if we changed state from full -> partial free
+	if (!was_full) {
+		MEMORY_ASSERT(size_class->free_chunk_list);
+		return;
+	}
+
+	//Chunk went from full -> partial free, add to list
+	if (size_class->free_chunk_list) {
+		chunk_t* next_chunk = pointer_offset_pages(heap, size_class->free_chunk_list);
+		chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, chunk);
+		next_chunk->prev_chunk = (int32_t)pointer_diff_pages(chunk, next_chunk);
+	}
+	else {
+		chunk->next_chunk = 0;
+	}
+	size_class->free_chunk_list = (int32_t)pointer_diff_pages(chunk, heap);
+	MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == chunk);
+
+	MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
 }
 
 static int
 _memory_initialize(void) {
-	//Initialize heaps
-	unsigned int block_size[11] = {    32,   64,   96,  128,  256, 512, 1024, 4096, 8192, 32768, 65536 };
-	unsigned int block_count[11] = { 2048, 1024, 1024, 1024, 1024, 512,  256,  128,   64,    32,    16 };
-	unsigned int num_sizeclass = 11;
-	unsigned int num_heap_pool = 7;
-	unsigned int ipool, iheap, iclass;
-	unsigned int size;
-	memory_heap_t* base_heap;
-	void* block;
-
-	log_memory_debug("Initialize memory library");
-
-	memset(&_memory_statistics, 0, sizeof(_memory_statistics));
-
-	num_heap_pool = (unsigned int)system_hardware_threads() + 1;
-	if (num_heap_pool < 3)
-		num_heap_pool = 3;
-	if (num_heap_pool > 32)
-		num_heap_pool = 32;
-
-	size = (sizeof(memory_heap_pool_t) * num_heap_pool) + (num_sizeclass * (sizeof(
-	                                                           memory_sizeclass_t) + (sizeof(memory_heap_t) * num_heap_pool)));
-	block = _memory_allocate_superblock(size, true);
-	memset(block, 0, size);
-
-	_memory_heap_pool = block;
-
-	_memory_sizeclass = (memory_sizeclass_t*)(_memory_heap_pool + num_heap_pool);
-	for (iclass = 0; iclass < num_sizeclass; ++iclass) {
-		//TODO: Tweak these values (or even profile at runtime per-project)
-		_memory_sizeclass[iclass].block_size = block_size[iclass];
-		_memory_sizeclass[iclass].superblock_size = block_size[iclass] * block_count[iclass];
-	}
-
-	base_heap = (memory_heap_t*)(_memory_sizeclass + num_sizeclass);
-	for (ipool = 0; ipool < num_heap_pool; ++ipool) {
-		_memory_heap_pool[ipool].heaps = base_heap + (ipool * num_sizeclass);
-		for (iheap = 0; iheap < num_sizeclass; ++iheap)
-			_memory_heap_pool[ipool].heaps[iheap].size_class = _memory_sizeclass + iheap;
-	}
-
-	_memory_num_sizeclass = num_sizeclass;
-	_memory_num_heap_pool = num_heap_pool;
-
-	atomic_store64(&_memory_descriptor_available.raw, 0);
-
-	//Preallocate descriptors
-	_memory_retire_descriptor(0, _memory_allocate_descriptor());
-
+#if FOUNDATION_PLATFORM_WINDOWS
+	NtAllocateVirtualMemory = (NtAllocateVirtualMemoryFn)GetProcAddress(GetModuleHandleA("ntdll.dll"),
+	                          "NtAllocateVirtualMemory");
+#endif
 	return 0;
 }
 
 static void
 _memory_finalize(void) {
-	unsigned int ipool, iheap, iclass, size;
-	memory_descriptor_t* descriptor;
-
-	log_memory_debug("Shutdown memory library");
-
-	for (ipool = 0; ipool < _memory_num_heap_pool; ++ipool) {
-		for (iheap = 0; iheap < _memory_num_sizeclass; ++iheap) {
-			memory_heap_t* heap = _memory_heap_pool[ipool].heaps + iheap;
-			memory_descriptor_t* partial;
-
-			partial = MEMORY_UNMASK_POINTER(heap->partial.ptr.pointer);
-			if (partial)
-				_memory_retire_descriptor(heap, partial);
-			atomic_store64(&heap->partial.raw, 0);
-
-			descriptor = MEMORY_UNMASK_POINTER(heap->active.ptr.pointer);
-			if (descriptor)
-				_memory_retire_descriptor(heap, descriptor);
-			atomic_store64(&heap->active.raw, 0);
-
-#if BUILD_USE_HEAP_PENDING_SUPERBLOCK
-			{
-				void* pending_superblock = atomic_loadptr(&heap->pending_superblock);
-				if (pending_superblock)
-					_memory_free_superblock(pending_superblock, heap->size_class->superblock_size);
-				atomic_storeptr(&heap->pending_superblock, 0);
-			}
-#endif
-		}
-
-		_memory_heap_pool[ipool].heaps = 0;
-	}
-
-	for (iclass = 0; iclass < _memory_num_sizeclass; ++iclass) {
-		memory_sizeclass_t* size_class = _memory_sizeclass + iclass;
-
-		memory_descriptor_t* partial = MEMORY_UNMASK_POINTER(size_class->partial.ptr.pointer);
-		while (partial) {
-			memory_descriptor_t* next = (memory_descriptor_t*)partial->next;
-			_memory_retire_descriptor(partial->heap, partial);
-			partial = next;
-		}
-
-		atomic_store64(&size_class->partial.raw, 0);
-	}
-
-	descriptor = MEMORY_UNMASK_POINTER(_memory_descriptor_available.ptr.pointer);
-	while (descriptor) {
-		FOUNDATION_ASSERT_MSG(!descriptor->superblock, "Dangling superblock found in retired descriptor");
-		if (descriptor->superblock)
-			_memory_free_superblock(descriptor->superblock, descriptor->heap->size_class->superblock_size);
-		descriptor->superblock = 0;
-
-		descriptor = (memory_descriptor_t*)descriptor->next;
-	}
-
-	size = (sizeof(memory_heap_pool_t) * _memory_num_heap_pool) + (_memory_num_sizeclass * (sizeof(
-	            memory_sizeclass_t) + (sizeof(memory_heap_t) * _memory_num_heap_pool)));
-
-	_memory_num_sizeclass = 0;
-	_memory_num_heap_pool = 0;
-
-	_memory_free_superblock(_memory_sizeclass, size);
-
-	_memory_sizeclass = 0;
-	_memory_heap_pool = 0;
-
-	atomic_store64(&_memory_descriptor_available.raw, 0);
 }
+
+static void*
+_memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint) {
+	//Everything is 16 byte aligned
+	FOUNDATION_UNUSED(context);
+	FOUNDATION_UNUSED(align);
+
+	if (size > MEDIUM_SIZE_LIMIT) {
+		size += CHUNK_HEADER_SIZE;
+		size_t num_pages = size / PAGE_SIZE;
+		if (size % PAGE_SIZE)
+			++num_pages;
+		chunk_t* chunk = _memory_allocate_raw(num_pages);
+		chunk->size_class = 0xFF;
+		size_t* chunk_page_count = (size_t*)chunk->next_block;
+		*chunk_page_count = num_pages;
+		return pointer_offset(chunk, CHUNK_HEADER_SIZE);
+	}
+
+	//TODO: Add likely/unlikely branch hints in foundation lib
+	heap_t* heap = get_thread_heap();
+	if (!heap) {
+		heap = _memory_allocate_heap();
+		if (!heap)
+			return 0;
+		set_thread_heap(heap);
+	}
+
+	void* block = _memory_allocate_from_heap(heap, size);
+	if (block && (hint & MEMORY_ZERO_INITIALIZED))
+		memset(block, 0, size);
+
+	return block;
+}
+
+static void*
+_memory_reallocate(void* p, uint64_t size, unsigned int align, uint64_t oldsize) {
+	heap_t* heap = get_thread_heap();
+
+	chunk_t* chunk;
+	if (p) {
+		chunk = (void*)((uintptr_t)p & PAGE_MASK);
+		if (chunk->size_class != 0xFF) {
+			if (heap && (chunk->heap_id == heap->id)) {
+				size_class_t* size_class = heap->size_class + chunk->size_class;
+				if (size_class->size >= size)
+					return p; //Still fits in block
+			}
+		}
+	}
+
+	if (!heap) {
+		heap = _memory_allocate_heap();
+		if (!heap)
+			return 0;
+		set_thread_heap(heap);
+	}
+
+	void* block = _memory_allocate_from_heap(heap, size);
+	if (p) {
+		memcpy(block, p, oldsize < size ? oldsize : size);
+		_memory_deallocate_from_heap(heap, chunk, p);
+	}
+
+	return block;
+}
+
+static void
+_memory_deallocate(void* p) {
+	if (!p)
+		return;
+
+	chunk_t* chunk = (void*)((uintptr_t)p & PAGE_MASK);
+	if (chunk->size_class == 0xFF) {
+		size_t* chunk_page_count = (size_t*)chunk->next_block;
+		_memory_deallocate_raw(chunk, *chunk_page_count);
+		return;
+	}
+
+	heap_t* heap = get_thread_heap();
+	if (!heap || (chunk->heap_id != heap->id)) {
+		//Delegate to correct thread, or adopt if orphaned and we have a heap
+		//If neither, delegate to first thread we can find
+		FOUNDATION_ASSERT(false);
+		return;
+	}
+
+	_memory_deallocate_from_heap(heap, chunk, p);
+}
+
+
 
 memory_system_t
 memory_system(void) {
@@ -1186,48 +599,4 @@ memory_system(void) {
 	memsystem.initialize = _memory_initialize;
 	memsystem.finalize = _memory_finalize;
 	return memsystem;
-}
-
-memory_detailed_statistics_t
-memory_detailed_statistics(void) {
-	return _memory_statistics;
-}
-
-void memory_statistics_reset(void) {
-	_memory_statistics.allocated_total_raw = 0;
-	_memory_statistics.allocations_total_raw = 0;
-
-	_memory_statistics.allocated_total = 0;
-	_memory_statistics.allocations_total = 0;
-
-	_memory_statistics.allocations_new_descriptor_superblock = 0;
-	_memory_statistics.allocations_new_descriptor_superblock_deallocations = 0;
-
-	_memory_statistics.allocations_calls_new_block = 0;
-	_memory_statistics.allocations_new_block_earlyouts = 0;
-	_memory_statistics.allocations_new_block_superblock = 0;
-	_memory_statistics.allocations_new_block_pending_hits = 0;
-	_memory_statistics.allocations_new_block_superblock_success = 0;
-	_memory_statistics.allocations_new_block_pending_success = 0;
-	_memory_statistics.allocations_new_block_superblock_deallocations = 0;
-	_memory_statistics.allocations_new_block_pending_deallocations = 0;
-	_memory_statistics.allocations_new_block_superblock_stores = 0;
-	_memory_statistics.allocations_new_block_pending_stores = 0;
-
-	_memory_statistics.allocations_calls_oversize = 0;
-	_memory_statistics.allocations_calls_heap = 0;
-	_memory_statistics.allocations_calls_heap_loops = 0;
-
-	_memory_statistics.allocations_calls_active = 0;
-	_memory_statistics.allocations_calls_active_no_active = 0;
-	_memory_statistics.allocations_calls_active_to_partial = 0;
-	_memory_statistics.allocations_calls_active_to_active = 0;
-	_memory_statistics.allocations_calls_active_to_full = 0;
-	_memory_statistics.allocations_calls_active_credits = 0;
-
-	_memory_statistics.allocations_calls_partial = 0;
-	_memory_statistics.allocations_calls_partial_tries = 0;
-	_memory_statistics.allocations_calls_partial_no_descriptor = 0;
-	_memory_statistics.allocations_calls_partial_to_retire = 0;
-	_memory_statistics.allocations_calls_partial_to_full = 0;
 }
