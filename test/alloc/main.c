@@ -69,7 +69,7 @@ DECLARE_TEST(alloc, alloc) {
 	memsys.initialize();
 
 	for (id = 0; id < 20000; ++id)
-		data[id] = id % 139 + id % 17;
+		data[id] = (char)(id % 139 + id % 17);
 
 	for (iloop = 0; iloop < 64; ++iloop) {
 		for (ipass = 0; ipass < 8142; ++ipass) {
@@ -174,7 +174,7 @@ allocator_thread(void* argp) {
 	unsigned int iwait = 0;
 
 	for (id = 0; id < 8192; ++id)
-		data[id] = (unsigned char)id;
+		data[id] = (char)id;
 
 	iwait = random32_range(0, 10);
 	thread_sleep(iwait);
@@ -379,22 +379,20 @@ printf("Test\n");
 	return 0;
 }
 
-void 
-test_alloc_declare(void);
-
-void 
+static void 
 test_alloc_declare(void) {
 	ADD_TEST(alloc, alloc);
 	ADD_TEST(alloc, threaded);
 }
 
-test_suite_t test_alloc_suite = {
+static test_suite_t test_alloc_suite = {
 	test_alloc_application,
 	test_alloc_memory_system,
 	test_alloc_config,
 	test_alloc_declare,
 	test_alloc_initialize,
-	test_alloc_finalize
+	test_alloc_finalize,
+	0
 };
 
 #if FOUNDATION_PLATFORM_ANDROID

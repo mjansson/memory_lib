@@ -40,13 +40,4 @@
 #define BUILD_ENABLE_DETAILED_MEMORY_STATISTICS  0
 #endif
 
-#ifndef BUILD_USE_HEAP_PENDING_SUPERBLOCK
-#define BUILD_USE_HEAP_PENDING_SUPERBLOCK        1
-#endif
-
-#ifndef BUILD_USE_PRE_ALIGN
-#define BUILD_USE_PRE_ALIGN                      1
-#endif
-
-
 // Allocation sizes

@@ -25,32 +25,37 @@
 #include <memory/types.h>
 
 #if BUILD_ENABLE_MEMORY_SPAM_LOG
-#  define log_memory_spamf( msg, ... ) log_debugf( HASH_MEMORY, msg, __VA_ARGS__ )
+#  define log_memory_spam(...) log_debug(HASH_MEMORY, __VA_ARGS__)
+#  define log_memory_spamf(...) log_debugf(HASH_MEMORY, __VA_ARGS__)
 #else
-#  define log_memory_spamf( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_spam(...) do { FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0)
+#  define log_memory_spamf(...) do { FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0)
 #endif
 
 #if BUILD_ENABLE_MEMORY_DEBUG_LOG
-#  define log_memory_debugf( msg, ... ) log_debugf( HASH_MEMORY, msg, __VA_ARGS__ )
+#  define log_memory_debug(...) log_debug(HASH_MEMORY, __VA_ARGS__)
+#  define log_memory_debugf(...) log_debugf(HASH_MEMORY, __VA_ARGS__)
 #else
-#  define log_memory_debugf( msg, ... ) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_debug(...) do { FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0)
+#  define log_memory_debugf(...) do { FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0)
 #endif
 
 #if BUILD_ENABLE_MEMORY_LOG
-#  define log_memory_infof( format, ... ) log_infof( HASH_MEMORY, format, __VA_ARGS__ )
-#  define log_memory_warnf( warn, format, ... ) log_warnf( HASH_MEMORY, warn, format, __VA_ARGS__ )
-#  define log_memory_errorf( err, format, ... ) log_errorf( HASH_MEMORY, err, format, __VA_ARGS__ )
-#  define log_memory_panicf( err, format, ... ) log_panicf( HASH_MEMORY, err, format, __VA_ARGS__ )
+#  define log_memory_info(...) log_info(HASH_MEMORY, __VA_ARGS__)
+#  define log_memory_infof(...) log_infof(HASH_MEMORY, __VA_ARGS__)
+#  define log_memory_warn(warn, ...) log_warn(HASH_MEMORY, warn, __VA_ARGS__)
+#  define log_memory_warnf(warn, ...) log_warnf(HASH_MEMORY, warn, __VA_ARGS__)
+#  define log_memory_error(err, ...) log_error( HASH_MEMORY, err, __VA_ARGS__ )
+#  define log_memory_errorf(err, ...) log_errorf( HASH_MEMORY, err, __VA_ARGS__ )
+#  define log_memory_panic(err, ...) log_panic( HASH_MEMORY, err, __VA_ARGS__ )
+#  define log_memory_panicf(err, ...) log_panicf( HASH_MEMORY, err, __VA_ARGS__ )
 #else
-#  define log_memory_infof(msg, ...) /*lint -save -e717 */ do { (void)sizeof( msg ); } while(0) /*lint -restore */
-#  define log_memory_warnf(warn, msg, ...) /*lint -save -e717 */ do { (void)sizeof( warn ); (void)sizeof( msg ); } while(0) /*lint -restore */
-#  define log_memory_errorf(err, msg, ...) /*lint -save -e717 */ do { error_report( ERRORLEVEL_ERROR, err ); (void)sizeof( msg ); } while(0) /*lint -restore */
-#  define log_memory_panicf(err, msg, ...) /*lint -save -e717 */ do { error_report( ERRORLEVEL_PANIC, err ); (void)sizeof( msg ); } while(0) /*lint -restore */
+#  define log_memory_info(...) do { FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0)
+#  define log_memory_infof(...) do { FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0)
+#  define log_memory_warn(warn, ...) do { FOUNDATION_UNUSED(warn); FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0)
+#  define log_memory_warnf(warn, ...) do { FOUNDATION_UNUSED(warn); FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0)
+#  define log_memory_error(err, ...) do { error_report(ERRORLEVEL_ERROR, err); FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0) /*lint -restore */
+#  define log_memory_errorf(err, ...) do { error_report(ERRORLEVEL_ERROR, err); FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0) /*lint -restore */
+#  define log_memory_panic(err, ...) do { error_report(ERRORLEVEL_PANIC, err); FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0) /*lint -restore */
+#  define log_memory_panicf(err, ...) do { error_report(ERRORLEVEL_PANIC, err); FOUNDATION_UNUSED_VARARGS(__VA_ARGS__); } while(0) /*lint -restore */
 #endif
-
-#define log_memory_spam(...)  log_memory_spamf(HASH_MEMORY, "%.*s", __VA_ARGS__)
-#define log_memory_debug(...) log_memory_debugf(HASH_MEMORY, "%.*s", __VA_ARGS__)
-#define log_memory_info(...)  log_memory_infof(HASH_MEMORY, "%.*s", __VA_ARGS__)
-#define log_memory_warn(...)  log_memory_warnf(HASH_MEMORY, "%.*s", __VA_ARGS__)
-#define log_memory_error(...) log_memory_errorf(HASH_MEMORY, "%.*s", __VA_ARGS__)
-#define log_memory_panic(...) log_memory_panicf(HASH_MEMORY, "%.*s", __VA_ARGS__)
