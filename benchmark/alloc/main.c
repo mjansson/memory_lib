@@ -19,13 +19,20 @@
 #include <memory/memory.h>
 #include <memory/log.h>
 
+static memory_system_t _memory_system_to_test;
+
+static memory_system_t _memory_system;
+static memory_system_t _memory_system_malloc;
+static memory_system_t _memory_system_ptmalloc;
+static memory_system_t _memory_system_nedmalloc;
+
 typedef struct _benchmark_result {
 	tick_t  elapsed;
 	size_t  ops;
 } benchmark_result_t;
 
-typedef benchmark_result_t (*benchmark_loop_fn)(memory_system_t* memsys, void** ptr,
-                                                size_t* size);
+typedef benchmark_result_t (*benchmark_loop_fn)(
+    memory_system_t* memsys, void** ptr, size_t* size);
 
 typedef struct _benchmark_arg {
 	benchmark_loop_fn   function;
@@ -35,16 +42,43 @@ typedef struct _benchmark_arg {
 	size_t*             size;
 } benchmark_arg_t;
 
-static void** ptr_malloc[64];
 static void** ptr_memory[64];
 static size_t* random_size;
+
+
+static void
+_run_thread_warmup(memory_system_t* memsys) {
+	size_t iloop, stepsize, loopsteps, iblock, blocksteps;
+	volatile uintptr_t result = 0;
+	void** ptrs;
+
+	stepsize = 16;
+	loopsteps = 65536 / stepsize;
+	blocksteps = 256;
+
+	ptrs = memsys->allocate(0, sizeof(void*) * loopsteps * blocksteps, 0, MEMORY_PERSISTENT);
+	for (iloop = 0; iloop < loopsteps; ++iloop) {
+		for (iblock = 0; iblock < blocksteps; ++iblock) {
+			ptrs[iloop*blocksteps + iblock] = memsys->allocate(0, iloop * stepsize, 0, MEMORY_PERSISTENT);
+			result += (uintptr_t)ptrs[iloop*blocksteps + iblock];
+		}
+
+		for (iblock = 0; iblock < blocksteps; ++iblock) {
+			memsys->deallocate(ptrs[iloop*blocksteps + iblock]);
+		}
+	}
+
+	memsys->deallocate(ptrs);
+}
 
 static void*
 benchmark_thread(void* argp) {
 	int iloop;
 	benchmark_arg_t* arg = argp;
 
-	thread_sleep(500);
+	thread_sleep(100);
+
+	_run_thread_warmup(arg->memsys);
 
 	for (iloop = 0; iloop < 8; ++iloop) {
 		benchmark_result_t current = arg->function(arg->memsys, arg->ptr, arg->size);
@@ -254,7 +288,9 @@ main_initialize(void) {
 	//log_set_suppress(HASH_MEMORY, ERRORLEVEL_INFO);
 	//log_set_suppress(HASH_BENCHMARK, ERRORLEVEL_DEBUG);
 
-	if ((ret = foundation_initialize(memory_system_malloc(), app, config)) < 0)
+	_memory_system_to_test = memory_system();
+
+	if ((ret = foundation_initialize(_memory_system_to_test, app, config)) < 0)
 		return ret;
 
 	return 0;
@@ -262,7 +298,7 @@ main_initialize(void) {
 
 int
 main_run(void* main_arg) {
-	int iloop, ipass;// , iseq;
+	int iloop, iseq;
 	unsigned int i;
 	benchmark_result_t res, res_worst, res_best;
 	thread_t thread[64];
@@ -271,33 +307,9 @@ main_run(void* main_arg) {
 
 	FOUNDATION_UNUSED(main_arg);
 
-	memory_system_t sys_malloc = memory_system_malloc();
-	memory_system_t sys_memory = memory_system();
-
-	sys_malloc.initialize();
-	sys_memory.initialize();
-
-	//Warmup
+	//Allocate memory for holding the allocated blocks
 	for (iloop = 0; iloop < 64; ++iloop) {
-		ptr_malloc[iloop] = sys_malloc.allocate(0, (size_t)(iloop+1), 0, MEMORY_PERSISTENT);
-		ptr_memory[iloop] = sys_memory.allocate(0, (size_t)(iloop+1), 0, MEMORY_PERSISTENT);
-		sys_malloc.deallocate(ptr_malloc[iloop]);
-		sys_memory.deallocate(ptr_memory[iloop]);
-
-		ptr_malloc[iloop] = sys_malloc.allocate(0, sizeof(void*) * (size_t)iloop, 0, MEMORY_PERSISTENT);
-		ptr_memory[iloop] = sys_memory.allocate(0, sizeof(void*) * (size_t)iloop, 0, MEMORY_PERSISTENT);
-		sys_malloc.deallocate(ptr_malloc[iloop]);
-		sys_memory.deallocate(ptr_memory[iloop]);
-
-		ptr_malloc[iloop] = sys_malloc.allocate(0, 1024 * (size_t)iloop, 0, MEMORY_PERSISTENT);
-		ptr_memory[iloop] = sys_memory.allocate(0, 1024 * (size_t)iloop, 0, MEMORY_PERSISTENT);
-		sys_malloc.deallocate(ptr_malloc[iloop]);
-		sys_memory.deallocate(ptr_memory[iloop]);
-	}
-
-	for (iloop = 0; iloop < 64; ++iloop) {
-		ptr_malloc[iloop] = sys_malloc.allocate(0, sizeof(void*) * 8192, 0, MEMORY_PERSISTENT);
-		ptr_memory[iloop] = sys_memory.allocate(0, sizeof(void*) * 8192, 0, MEMORY_PERSISTENT);
+		ptr_memory[iloop] = _memory_system_to_test.allocate(0, sizeof(void*) * 8192, 0, MEMORY_PERSISTENT);
 	}
 
 	random_size = memory_allocate(0, sizeof(size_t) * 8192, 0, MEMORY_PERSISTENT);
@@ -310,44 +322,26 @@ main_run(void* main_arg) {
 	if (num_thread > 64)
 		num_thread = 64;
 
+	benchmark_result_t current;
+
 	//Warmup phase
-	log_info(HASH_BENCHMARK, STRING_CONST("Benchmark initializing"));
-	for (iloop = 0; iloop < 64; ++iloop) {
-		for (ipass = 0; ipass < 8192; ++ipass) {
-			ptr_malloc[0][ipass] = sys_malloc.allocate(0, (size_t)(ipass + iloop), 0, MEMORY_PERSISTENT);
-			ptr_memory[0][ipass] = sys_memory.allocate(0, (size_t)(ipass + iloop), 0, MEMORY_PERSISTENT);
-		}
+	log_infof(HASH_BENCHMARK, STRING_CONST("Benchmark initializing, running on %" PRIsize
+	                                       " cores with %" PRIsize " threads"),
+	          system_hardware_threads(), num_thread);
 
-		for (ipass = 0; ipass < 8192; ++ipass) {
-			sys_malloc.deallocate(ptr_malloc[0][ipass]);
-			sys_memory.deallocate(ptr_memory[0][ipass]);
-		}
-	}
+	_run_thread_warmup(&_memory_system_to_test);
 
-	log_infof(HASH_BENCHMARK, STRING_CONST("Running on %" PRIsize " cores"), system_hardware_threads());
-
-	/*log_info(HASH_BENCHMARK, STRING_CONST(""));
+	log_info(HASH_BENCHMARK, STRING_CONST(""));
 	log_info(HASH_BENCHMARK, STRING_CONST("Single threaded sequential small allocation"));
 	log_info(HASH_BENCHMARK, STRING_CONST("==========================================="));
 	res.elapsed = 0;
 	res.ops= 0;
 	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_allocation_loop(&sys_malloc, ptr_malloc[0], random_size);
+		current = _run_small_allocation_loop(&_memory_system_to_test, ptr_memory[0], random_size);
 		res.elapsed += current.elapsed;
 		res.ops += current.ops;
 	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc time: %.4" PRIreal "s : %u allocs/s"),
-	          time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_allocation_loop(&sys_memory, ptr_memory[0], random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory time: %.4" PRIreal "s : %u allocs/s"),
+	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u allocs/s"),
 	          time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
@@ -357,24 +351,11 @@ main_run(void* main_arg) {
 	res.elapsed = 0;
 	res.ops= 0;
 	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_random_allocation_loop(&sys_malloc, ptr_malloc[0],
-		                             random_size);
+		current = _run_small_random_allocation_loop(&_memory_system_to_test, ptr_memory[0], random_size);
 		res.elapsed += current.elapsed;
 		res.ops += current.ops;
 	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc time: %.4" PRIreal "s : %u allocs/s"),
-	          time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_random_allocation_loop(&sys_memory, ptr_memory[0],
-		                             random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory time: %.4" PRIreal "s : %u allocs/s"),
+	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u allocs/s"),
 	          time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
@@ -384,24 +365,11 @@ main_run(void* main_arg) {
 	res.elapsed = 0;
 	res.ops= 0;
 	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_random_reallocation_loop(&sys_malloc, ptr_malloc[0],
-		                             random_size);
+		current = _run_small_random_reallocation_loop(&_memory_system_to_test, ptr_memory[0], random_size);
 		res.elapsed += current.elapsed;
 		res.ops += current.ops;
 	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc time: %.4" PRIreal "s : %u reallocs/s"),
-	          time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_random_reallocation_loop(&sys_memory, ptr_memory[0],
-		                             random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory time: %.4" PRIreal "s : %u reallocs/s"),
+	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u reallocs/s"),
 	          time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
@@ -411,24 +379,11 @@ main_run(void* main_arg) {
 	res.elapsed = 0;
 	res.ops= 0;
 	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_random_deallocation_loop(&sys_malloc, ptr_malloc[0],
-		                             random_size);
+		current = _run_small_random_deallocation_loop(&_memory_system_to_test, ptr_memory[0], random_size);
 		res.elapsed += current.elapsed;
 		res.ops += current.ops;
 	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc time: %.4" PRIreal "s : %u deallocs/s"),
-	          time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_random_deallocation_loop(&sys_memory, ptr_memory[0],
-		                             random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory time: %.4" PRIreal "s : %u deallocs/s"),
+	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u deallocs/s"),
 	          time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
@@ -440,24 +395,13 @@ main_run(void* main_arg) {
 	res.elapsed = 0;
 	res.ops= 0;
 	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_random_mixed_loop(&sys_malloc, ptr_malloc[0], random_size);
+		current = _run_small_random_mixed_loop(&_memory_system_to_test, ptr_memory[0], random_size);
 		res.elapsed += current.elapsed;
 		res.ops += current.ops;
 	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc time: %.4" PRIreal "s : %u ops/s"),
+	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u ops/s"),
 	          time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		benchmark_result_t current = _run_small_random_mixed_loop(&sys_memory, ptr_memory[0], random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory time: %.4" PRIreal "s : %u ops/s"),
-	          time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));*/
 
 	log_info(HASH_BENCHMARK, STRING_CONST(""));
 	log_info(HASH_BENCHMARK, STRING_CONST("Multi threaded sequential small allocation"));
@@ -467,31 +411,7 @@ main_run(void* main_arg) {
 		memset(arg + i, 0, sizeof(benchmark_arg_t));
 
 		arg[i].function = _run_small_allocation_loop;
-		arg[i].memsys = &sys_malloc;
-		arg[i].ptr = ptr_malloc[i];
-		arg[i].size = random_size;
-
-		thread_initialize(thread + i, benchmark_thread, arg + i, STRING_CONST("allocator"),
-		                  THREAD_PRIORITY_NORMAL, 0);
-	}
-
-	for (i = 0; i < num_thread; ++i)
-		thread_start(thread + i);
-	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
-	for (i = 0; i < num_thread; ++i)
-		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc avg time: %.4" PRIreal "s : %u ops/s (best %.4"
-	                                       PRIreal "s, worst %.4" PRIreal "s)"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
-	          (double)time_ticks_to_seconds(res_best.elapsed),
-	          (double)time_ticks_to_seconds(res_worst.elapsed));
-
-	for (i = 0; i < num_thread; ++i) {
-		memset(arg + i, 0, sizeof(benchmark_arg_t));
-
-		arg[i].function = _run_small_allocation_loop;
-		arg[i].memsys = &sys_memory;
+		arg[i].memsys = &_memory_system_to_test;
 		arg[i].ptr = ptr_memory[i];
 		arg[i].size = random_size;
 
@@ -504,7 +424,7 @@ main_run(void* main_arg) {
 	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
 	for (i = 0; i < num_thread; ++i)
 		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory avg time: %.4" PRIreal "s : %u ops/s (best %.4"
+	log_infof(HASH_BENCHMARK, STRING_CONST("Avg time: %.4" PRIreal "s : %u ops/s (best %.4"
 	                                       PRIreal "s, worst %.4" PRIreal "s)"),
 	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
@@ -519,31 +439,7 @@ main_run(void* main_arg) {
 		memset(arg + i, 0, sizeof(benchmark_arg_t));
 
 		arg[i].function = _run_small_random_allocation_loop;
-		arg[i].memsys = &sys_malloc;
-		arg[i].ptr = ptr_malloc[i];
-		arg[i].size = random_size;
-
-		thread_initialize(thread + i, benchmark_thread, arg + i, STRING_CONST("allocator"),
-		                  THREAD_PRIORITY_NORMAL, 0);
-	}
-
-	for (i = 0; i < num_thread; ++i)
-		thread_start(thread + i);
-	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
-	for (i = 0; i < num_thread; ++i)
-		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc avg time: %.4" PRIreal "s : %u ops/s (best %.4"
-	                                       PRIreal "s, worst %.4" PRIreal "s)"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
-	          (double)time_ticks_to_seconds(res_best.elapsed),
-	          (double)time_ticks_to_seconds(res_worst.elapsed));
-
-	for (i = 0; i < num_thread; ++i) {
-		memset(arg + i, 0, sizeof(benchmark_arg_t));
-
-		arg[i].function = _run_small_random_allocation_loop;
-		arg[i].memsys = &sys_memory;
+		arg[i].memsys = &_memory_system_to_test;
 		arg[i].ptr = ptr_memory[i];
 		arg[i].size = random_size;
 
@@ -556,7 +452,7 @@ main_run(void* main_arg) {
 	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
 	for (i = 0; i < num_thread; ++i)
 		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory avg time: %.4" PRIreal "s : %u ops/s (best %.4"
+	log_infof(HASH_BENCHMARK, STRING_CONST("Avg time: %.4" PRIreal "s : %u ops/s (best %.4"
 	                                       PRIreal "s, worst %.4" PRIreal "s)"),
 	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
@@ -571,31 +467,7 @@ main_run(void* main_arg) {
 		memset(arg + i, 0, sizeof(benchmark_arg_t));
 
 		arg[i].function = _run_small_random_reallocation_loop;
-		arg[i].memsys = &sys_malloc;
-		arg[i].ptr = ptr_malloc[i];
-		arg[i].size = random_size;
-
-		thread_initialize(thread + i, benchmark_thread, arg + i, STRING_CONST("allocator"),
-		                  THREAD_PRIORITY_NORMAL, 0);
-	}
-
-	for (i = 0; i < num_thread; ++i)
-		thread_start(thread + i);
-	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
-	for (i = 0; i < num_thread; ++i)
-		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc avg time: %.4" PRIreal "s : %u ops/s (best %.4"
-	                                       PRIreal "s, worst %.4" PRIreal "s)"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
-	          (double)time_ticks_to_seconds(res_best.elapsed),
-	          (double)time_ticks_to_seconds(res_worst.elapsed));
-
-	for (i = 0; i < num_thread; ++i) {
-		memset(arg + i, 0, sizeof(benchmark_arg_t));
-
-		arg[i].function = _run_small_random_reallocation_loop;
-		arg[i].memsys = &sys_memory;
+		arg[i].memsys = &_memory_system_to_test;
 		arg[i].ptr = ptr_memory[i];
 		arg[i].size = random_size;
 
@@ -608,7 +480,7 @@ main_run(void* main_arg) {
 	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
 	for (i = 0; i < num_thread; ++i)
 		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory avg time: %.4" PRIreal "s : %u ops/s (best %.4"
+	log_infof(HASH_BENCHMARK, STRING_CONST("Avg time: %.4" PRIreal "s : %u ops/s (best %.4"
 	                                       PRIreal "s, worst %.4" PRIreal "s)"),
 	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
@@ -623,30 +495,7 @@ main_run(void* main_arg) {
 		memset(arg + i, 0, sizeof(benchmark_arg_t));
 
 		arg[i].function = _run_small_random_deallocation_loop;
-		arg[i].memsys = &sys_malloc;
-		arg[i].ptr = ptr_malloc[i];
-		arg[i].size = random_size;
-
-		thread_initialize(thread + i, benchmark_thread, arg + i, STRING_CONST("allocator"),
-		                  THREAD_PRIORITY_NORMAL, 0);
-	}
-
-	for (i = 0; i < num_thread; ++i)
-		thread_start(thread + i);
-	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
-	for (i = 0; i < num_thread; ++i)
-		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc avg time: %.4fs : %u ops/s (best %.4fs, worst %.4fs)"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
-	          (double)time_ticks_to_seconds(res_best.elapsed),
-	          (double)time_ticks_to_seconds(res_worst.elapsed));
-
-	for (i = 0; i < num_thread; ++i) {
-		memset(arg + i, 0, sizeof(benchmark_arg_t));
-
-		arg[i].function = _run_small_random_deallocation_loop;
-		arg[i].memsys = &sys_memory;
+		arg[i].memsys = &_memory_system_to_test;
 		arg[i].ptr = ptr_memory[i];
 		arg[i].size = random_size;
 
@@ -659,7 +508,7 @@ main_run(void* main_arg) {
 	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
 	for (i = 0; i < num_thread; ++i)
 		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory avg time: %.4" PRIreal "s : %u ops/s (best %.4"
+	log_infof(HASH_BENCHMARK, STRING_CONST("Avg time: %.4" PRIreal "s : %u ops/s (best %.4"
 	                                       PRIreal "s, worst %.4" PRIreal "s)"),
 	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
@@ -676,31 +525,7 @@ main_run(void* main_arg) {
 		memset(arg + i, 0, sizeof(benchmark_arg_t));
 
 		arg[i].function = _run_small_random_mixed_loop;
-		arg[i].memsys = &sys_malloc;
-		arg[i].ptr = ptr_malloc[i];
-		arg[i].size = random_size;
-
-		thread_initialize(thread + i, benchmark_thread, arg + i, STRING_CONST("allocator"),
-		                  THREAD_PRIORITY_NORMAL, 0);
-	}
-
-	for (i = 0; i < num_thread; ++i)
-		thread_start(thread + i);
-	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
-	for (i = 0; i < num_thread; ++i)
-		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Malloc avg time: %.4" PRIreal "s : %u ops/s (best %.4"
-	                                       PRIreal "s, worst %.4" PRIreal "s)"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
-	          (double)time_ticks_to_seconds(res_best.elapsed),
-	          (double)time_ticks_to_seconds(res_worst.elapsed));
-
-	for (i = 0; i < num_thread; ++i) {
-		memset(arg + i, 0, sizeof(benchmark_arg_t));
-
-		arg[i].function = _run_small_random_mixed_loop;
-		arg[i].memsys = &sys_memory;
+		arg[i].memsys = &_memory_system_to_test;
 		arg[i].ptr = ptr_memory[i];
 		arg[i].size = random_size;
 
@@ -713,7 +538,7 @@ main_run(void* main_arg) {
 	_collect_thread_results(thread, arg, num_thread, &res, &res_worst, &res_best);
 	for (i = 0; i < num_thread; ++i)
 		thread_finalize(thread + i);
-	log_infof(HASH_BENCHMARK, STRING_CONST("Memory avg time: %.4" PRIreal "s : %u ops/s (best %.4"
+	log_infof(HASH_BENCHMARK, STRING_CONST("Avg time: %.4" PRIreal "s : %u ops/s (best %.4"
 	                                       PRIreal "s, worst %.4" PRIreal "s)"),
 	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)),
@@ -721,14 +546,10 @@ main_run(void* main_arg) {
 	          (double)time_ticks_to_seconds(res_worst.elapsed));
 
 	for (iloop = 0; iloop < 64; ++iloop) {
-		sys_malloc.deallocate(ptr_malloc[iloop]);
-		sys_memory.deallocate(ptr_memory[iloop]);
+		_memory_system_to_test.deallocate(ptr_memory[iloop]);
 	}
 
 	memory_deallocate(random_size);
-
-	sys_malloc.finalize();
-	sys_memory.finalize();
 
 	return 0;
 }

@@ -48,7 +48,8 @@
 //#define MEMORY_ASSERT(...)
 
 #define PAGE_SIZE           4096
-#define MAX_CHUNK_SIZE      65536
+#define PAGE_ADDRESS_GRANULARITY 65536
+#define MAX_CHUNK_SIZE      (PAGE_ADDRESS_GRANULARITY)
 #define MAX_PAGE_COUNT      (MAX_CHUNK_SIZE/PAGE_SIZE)
 #define PAGE_MASK           (~(MAX_CHUNK_SIZE - 1))
 
@@ -58,8 +59,10 @@
 #define SMALL_CLASS_COUNT   (((PAGE_SIZE - CHUNK_HEADER_SIZE) / 2) / SMALL_GRANULARITY)
 #define SMALL_SIZE_LIMIT    (SMALL_CLASS_COUNT * SMALL_GRANULARITY)
 
-#define MEDIUM_SIZE_LIMIT   (MAX_CHUNK_SIZE - CHUNK_HEADER_SIZE)
 #define MEDIUM_CLASS_COUNT  32
+#define MEDIUM_SIZE_INCR_UNALIGNED ((MAX_CHUNK_SIZE - (CHUNK_HEADER_SIZE * 2) - SMALL_SIZE_LIMIT) / MEDIUM_CLASS_COUNT)
+#define MEDIUM_SIZE_INCR    (MEDIUM_SIZE_INCR_UNALIGNED - (MEDIUM_SIZE_INCR_UNALIGNED % 16))
+#define MEDIUM_SIZE_LIMIT   (SMALL_SIZE_LIMIT + (MEDIUM_CLASS_COUNT * MEDIUM_SIZE_INCR))
 
 #define SIZE_CLASS_COUNT    (SMALL_CLASS_COUNT + MEDIUM_CLASS_COUNT)
 
@@ -67,8 +70,8 @@
 
 #define SPAN_LIST_LOCK_TOKEN ((void*)1)
 
-#define pointer_offset_pages(ptr, offset) (pointer_offset((ptr), (uintptr_t)(offset) * PAGE_SIZE))
-#define pointer_diff_pages(a, b) ((int32_t)(pointer_diff((a), (b)) / PAGE_SIZE))
+#define pointer_offset_pages(ptr, offset) (pointer_offset((ptr), (uintptr_t)(offset) * PAGE_ADDRESS_GRANULARITY))
+#define pointer_diff_pages(a, b) ((int32_t)(pointer_diff((a), (b)) / PAGE_ADDRESS_GRANULARITY))
 
 typedef struct size_class_t size_class_t;
 typedef struct tag_t tag_t;
@@ -78,14 +81,15 @@ typedef struct span_t span_t;
 
 /* ASSUMPTIONS
    ===========
-   Chunk offsets as signed offset in number of pages
-   (actual offset is PAGE_SIZE * next_chunk). This assumes
-   the maximum distance in memory address space between
-   two different pages is less than 2^44
+   Assumes all virtual memory pages allocated are on a PAGE_ADDRESS_GRANULARITY
+   alignment, meaning PAGE_MASK-1 bits are always zero for a page virtual
+   memory address.
 
-   Assumes all virtual memory pages allocated are on a
-   PAGE_SIZE*MAX_PAGE_COUNT alignment, meaning PAGE_MASK-1
-   bits are always zero. */
+   Chunk offsets as signed offset in number of page address granularity steps
+   (actual offset is PAGE_ADDRESS_GRANULARITY * next_chunk). This assumes
+   the maximum distance in memory address space between two different pages
+   is less than 2^48 (32bit integer offset, 16bit address granularity)
+*/
 
 //! Size class descriptor
 struct size_class_t {
@@ -128,12 +132,10 @@ struct chunk_t {
 struct heap_t {
 	//! Size classes
 	size_class_t size_class[SIZE_CLASS_COUNT];
-	//! Medium block size increments
-	size_t medium_block_increment;
-	//! Heap ID
-	uint16_t id;
 	//! Free spans
 	span_t* span_cache[SPAN_CLASS_COUNT];
+	//! Heap ID
+	uint16_t id;
 };
 
 //! Span of pages
@@ -444,15 +446,8 @@ _memory_allocate_heap(void) {
 		_memory_adjust_size_class(heap, iclass);
 	}
 
-	size_t increment = (MAX_CHUNK_SIZE - (CHUNK_HEADER_SIZE*2) - SMALL_SIZE_LIMIT) /
-	                   MEDIUM_CLASS_COUNT;
-	if (increment % 16)
-		increment -= (increment % 16);
-
-	heap->medium_block_increment = increment;
-
 	for (iclass = 0; iclass < MEDIUM_CLASS_COUNT; ++iclass) {
-		size_t size = SMALL_SIZE_LIMIT + (iclass + 1) * increment;
+		size_t size = SMALL_SIZE_LIMIT + ((iclass + 1) * MEDIUM_SIZE_INCR);
 		heap->size_class[SMALL_CLASS_COUNT + iclass].size = (uint16_t)size;
 
 		_memory_adjust_size_class(heap, SMALL_CLASS_COUNT + iclass);
@@ -468,7 +463,7 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	size_t class_idx = (size ? (size-1) : 0) / SMALL_GRANULARITY;
 	if (class_idx >= SMALL_CLASS_COUNT) {
 		MEMORY_ASSERT(size > SMALL_SIZE_LIMIT);
-		class_idx = SMALL_CLASS_COUNT + ((size - SMALL_SIZE_LIMIT) / heap->medium_block_increment);
+		class_idx = SMALL_CLASS_COUNT + ((size - (1 + SMALL_SIZE_LIMIT)) / MEDIUM_SIZE_INCR);
 	}
 
 	size_class_t* size_class = heap->size_class + class_idx;
@@ -669,29 +664,6 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 	MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
 }
 
-static int
-_memory_initialize(void) {
-#if FOUNDATION_PLATFORM_WINDOWS
-	/*NtAllocateVirtualMemory = (NtAllocateVirtualMemoryFn)GetProcAddress(GetModuleHandleA("ntdll.dll"),
-	                          "NtAllocateVirtualMemory");
-	if (!NtAllocateVirtualMemory)
-		return -1; */
-	SYSTEM_INFO system_info;
-	memset(&system_info, 0, sizeof(system_info));
-	GetSystemInfo(&system_info);
-	if (system_info.dwAllocationGranularity < 0x1000)
-		return -1;
-#endif
-#if FOUNDATION_PLATFORM_POSIX
-	atomic_store64(&_memory_addr, 0x1000000000ULL);
-#endif
-	return 0;
-}
-
-static void
-_memory_finalize(void) {
-}
-
 static void*
 _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint) {
 	//Everything is 16 byte aligned
@@ -744,14 +716,7 @@ _memory_reallocate(void* p, size_t size, unsigned int align, size_t oldsize) {
 		}
 	}
 
-	if (!heap) {
-		heap = _memory_allocate_heap();
-		if (!heap)
-			return 0;
-		set_thread_heap(heap);
-	}
-
-	void* block = _memory_allocate_from_heap(heap, size);
+	void* block = _memory_allocate(0, size, align, 0);
 	if (p) {
 		memcpy(block, p, oldsize < size ? oldsize : size);
 		_memory_deallocate_from_heap(heap, chunk, p);
@@ -783,6 +748,29 @@ _memory_deallocate(void* p) {
 	_memory_deallocate_from_heap(heap, chunk, p);
 }
 
+
+static int
+_memory_initialize(void) {
+#if FOUNDATION_PLATFORM_WINDOWS
+	/*NtAllocateVirtualMemory = (NtAllocateVirtualMemoryFn)GetProcAddress(GetModuleHandleA("ntdll.dll"),
+	                          "NtAllocateVirtualMemory");
+	if (!NtAllocateVirtualMemory)
+		return -1; */
+	SYSTEM_INFO system_info;
+	memset(&system_info, 0, sizeof(system_info));
+	GetSystemInfo(&system_info);
+	if (system_info.dwAllocationGranularity < 0x1000)
+		return -1;
+#endif
+#if FOUNDATION_PLATFORM_POSIX
+	atomic_store64(&_memory_addr, 0x1000000000ULL);
+#endif
+	return 0;
+}
+
+static void
+_memory_finalize(void) {
+}
 
 
 memory_system_t
