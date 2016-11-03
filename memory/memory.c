@@ -44,8 +44,8 @@
 #define MAXIMUM_NUMBER_OF_GLOBAL_CACHE_SPANS    (MAXIMUM_NUMBER_OF_THREAD_CACHE_SPANS*16)
 
 
-//#define MEMORY_ASSERT       FOUNDATION_ASSERT
-#define MEMORY_ASSERT(...)
+#define MEMORY_ASSERT       FOUNDATION_ASSERT
+//#define MEMORY_ASSERT(...)
 
 #define PAGE_SIZE           4096
 #define MAX_CHUNK_SIZE      65536
@@ -155,6 +155,10 @@ FOUNDATION_DECLARE_THREAD_LOCAL(heap_t*, heap, 0)
 static atomic32_t _memory_heap_id;
 static atomicptr_t _memory_span_cache[SPAN_CLASS_COUNT];
 
+#if FOUNDATION_PLATFORM_POSIX
+static atomic64_t _memory_addr;
+#endif
+
 static size_t
 _memory_chunk_header_size(size_t block_count) {
 	size_t header_size = sizeof(chunk_t) + block_count;
@@ -214,7 +218,7 @@ _memory_global_cache_insert(span_t* span, size_t page_count) {
 			uintptr_t global_span_count = (uintptr_t)global_span & (~PAGE_MASK);
 			MEMORY_ASSERT((global_span_count % MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS) == 0);
 
-			last_span->next_span = (span_t*)((void*)((uintptr_t)global_span & PAGE_MASK));
+			last_span->next_span = (span_t*)((void*)((uintptr_t)global_span & (uintptr_t)PAGE_MASK));
 			span->skip_span = last_span->next_span;
 			first_span = (span_t*)((void*)((uintptr_t)span | (global_span_count + num_spans_to_release)));
 
@@ -253,7 +257,7 @@ _memory_global_cache_extract(size_t page_count) {
 			//skip ahead in the list to get the new head
 			uintptr_t global_span_count = (uintptr_t)global_span & (~PAGE_MASK);
 			if (global_span_count > 0) {
-				span = (span_t*)((void*)((uintptr_t)global_span & PAGE_MASK));
+				span = (span_t*)((void*)((uintptr_t)global_span & (uintptr_t)PAGE_MASK));
 
 				MEMORY_ASSERT(global_span_count >= MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS);
 				MEMORY_ASSERT((global_span_count % MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS) == 0);
@@ -319,9 +323,19 @@ _memory_allocate_raw(heap_t* heap, size_t page_count) {
 	                                 MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	*/
 #else
-	pages_ptr = mmap(&pages_ptr, PAGE_SIZE * page_count, PROT_READ | PROT_WRITE,
+	do {
+		void* base_addr = (void*)(uintptr_t)atomic_exchange_and_add64(&_memory_addr, 0x10000LL);
+		pages_ptr = mmap(base_addr, PAGE_SIZE * page_count, PROT_READ | PROT_WRITE,
 	                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
-	MEMORY_ASSERT(!((uintptr_t)pages_ptr & ~(uintptr_t)PAGE_MASK));
+		if (!((uintptr_t)pages_ptr & ~(uintptr_t)PAGE_MASK)) {
+			if (pages_ptr != base_addr) {
+				atomic_store64(&_memory_addr, (int64_t)((uintptr_t)pages_ptr) + 0x10000LL);
+				atomic_thread_fence_release();
+			}
+			break;
+		}
+		munmap(pages_ptr, PAGE_SIZE * page_count);
+	} while (true);
 #endif
 
 	return pages_ptr;
@@ -349,6 +363,9 @@ _memory_deallocate_raw(heap_t* heap, void* ptr, size_t page_count) {
 
 #if FOUNDATION_PLATFORM_WINDOWS
 	VirtualFree(ptr, 0, MEM_RELEASE);
+#endif
+#if FOUNDATION_PLATFORM_POSIX
+	munmap(ptr, PAGE_SIZE * page_count);
 #endif
 }
 
@@ -657,6 +674,9 @@ _memory_initialize(void) {
 #if FOUNDATION_PLATFORM_WINDOWS
 	NtAllocateVirtualMemory = (NtAllocateVirtualMemoryFn)GetProcAddress(GetModuleHandleA("ntdll.dll"),
 	                          "NtAllocateVirtualMemory");
+#endif
+#if FOUNDATION_PLATFORM_POSIX
+	atomic_store64(&_memory_addr, 0x1000000000ULL);
 #endif
 	return 0;
 }
