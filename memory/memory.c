@@ -641,8 +641,15 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 static int
 _memory_initialize(void) {
 #if FOUNDATION_PLATFORM_WINDOWS
-	NtAllocateVirtualMemory = (NtAllocateVirtualMemoryFn)GetProcAddress(GetModuleHandleA("ntdll.dll"),
+	/*NtAllocateVirtualMemory = (NtAllocateVirtualMemoryFn)GetProcAddress(GetModuleHandleA("ntdll.dll"),
 	                          "NtAllocateVirtualMemory");
+	if (!NtAllocateVirtualMemory)
+		return -1; */
+	SYSTEM_INFO system_info;
+	memset(&system_info, 0, sizeof(system_info));
+	GetSystemInfo(&system_info);
+	if (system_info.dwAllocationGranularity < 0x1000)
+		return -1;
 #endif
 	return 0;
 }
