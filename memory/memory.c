@@ -19,6 +19,16 @@
 #include <memory/memory.h>
 #include <memory/log.h>
 
+#if FOUNDATION_PLATFORM_POSIX
+#  include <sys/mman.h>
+#  ifndef MAP_UNINITIALIZED
+#    define MAP_UNINITIALIZED 0
+#  endif
+#  ifndef MAP_ANONYMOUS
+#    define MAP_ANONYMOUS MAP_ANON
+#  endif
+#endif
+
 //Thresholds
 
 //! Minimum number of free blocks before releasing chunks back to cache
@@ -34,8 +44,8 @@
 #define MAXIMUM_NUMBER_OF_GLOBAL_CACHE_SPANS    (MAXIMUM_NUMBER_OF_THREAD_CACHE_SPANS*16)
 
 
-//#define MEMORY_ASSERT       FOUNDATION_ASSERT
-#define MEMORY_ASSERT(...)
+#define MEMORY_ASSERT       FOUNDATION_ASSERT
+//#define MEMORY_ASSERT(...)
 
 #define PAGE_SIZE           4096
 #define MAX_CHUNK_SIZE      65536
@@ -140,10 +150,14 @@ struct span_t {
 
 FOUNDATION_STATIC_ASSERT(sizeof(heap_t) <= PAGE_SIZE, "Invalid heap size");
 
-FOUNDATION_DECLARE_THREAD_LOCAL(heap_t*, heap, 0);
+FOUNDATION_DECLARE_THREAD_LOCAL(heap_t*, heap, 0)
 
 static atomic32_t _memory_heap_id;
 static atomicptr_t _memory_span_cache[SPAN_CLASS_COUNT];
+
+#if FOUNDATION_PLATFORM_POSIX
+static atomic64_t _memory_addr;
+#endif
 
 static size_t
 _memory_chunk_header_size(size_t block_count) {
@@ -204,7 +218,7 @@ _memory_global_cache_insert(span_t* span, size_t page_count) {
 			uintptr_t global_span_count = (uintptr_t)global_span & (~PAGE_MASK);
 			MEMORY_ASSERT((global_span_count % MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS) == 0);
 
-			last_span->next_span = (span_t*)((void*)((uintptr_t)global_span & PAGE_MASK));
+			last_span->next_span = (span_t*)((void*)((uintptr_t)global_span & (uintptr_t)PAGE_MASK));
 			span->skip_span = last_span->next_span;
 			first_span = (span_t*)((void*)((uintptr_t)span | (global_span_count + num_spans_to_release)));
 
@@ -243,7 +257,7 @@ _memory_global_cache_extract(size_t page_count) {
 			//skip ahead in the list to get the new head
 			uintptr_t global_span_count = (uintptr_t)global_span & (~PAGE_MASK);
 			if (global_span_count > 0) {
-				span = (span_t*)((void*)((uintptr_t)global_span & PAGE_MASK));
+				span = (span_t*)((void*)((uintptr_t)global_span & (uintptr_t)PAGE_MASK));
 
 				MEMORY_ASSERT(global_span_count >= MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS);
 				MEMORY_ASSERT((global_span_count % MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS) == 0);
@@ -302,12 +316,26 @@ _memory_allocate_raw(heap_t* heap, size_t page_count) {
 
 #if FOUNDATION_PLATFORM_WINDOWS
 	pages_ptr = VirtualAlloc(0, PAGE_SIZE * page_count, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-	MEMORY_ASSERT(!((uintptr_t)pages_ptr & 0xFFFF));
+	MEMORY_ASSERT(!((uintptr_t)pages_ptr & ~(uintptr_t)PAGE_MASK));
 
 	/* For controlling high order bits
 	long vmres = NtAllocateVirtualMemory(((HANDLE)(LONG_PTR)-1), &pages_ptr, 1, &allocate_size,
 	                                 MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	*/
+#else
+	do {
+		void* base_addr = (void*)(uintptr_t)atomic_exchange_and_add64(&_memory_addr, 0x10000LL);
+		pages_ptr = mmap(base_addr, PAGE_SIZE * page_count, PROT_READ | PROT_WRITE,
+	                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
+		if (!((uintptr_t)pages_ptr & ~(uintptr_t)PAGE_MASK)) {
+			if (pages_ptr != base_addr) {
+				atomic_store64(&_memory_addr, (int64_t)((uintptr_t)pages_ptr) + 0x10000LL);
+				atomic_thread_fence_release();
+			}
+			break;
+		}
+		munmap(pages_ptr, PAGE_SIZE * page_count);
+	} while (true);
 #endif
 
 	return pages_ptr;
@@ -335,6 +363,9 @@ _memory_deallocate_raw(heap_t* heap, void* ptr, size_t page_count) {
 
 #if FOUNDATION_PLATFORM_WINDOWS
 	VirtualFree(ptr, 0, MEM_RELEASE);
+#endif
+#if FOUNDATION_PLATFORM_POSIX
+	munmap(ptr, PAGE_SIZE * page_count);
 #endif
 }
 
@@ -395,7 +426,7 @@ _memory_adjust_size_class(heap_t* heap, size_t iclass) {
 	if ((iclass > 0) &&
 	        (heap->size_class[iclass-1].page_count == heap->size_class[iclass].page_count) &&
 	        (heap->size_class[iclass-1].block_count == heap->size_class[iclass].block_count)) {
-		log_memory_spamf("  merge previous size class");
+		log_memory_spam("  merge previous size class");
 		heap->size_class[iclass-1].size = 0;
 	}
 }
@@ -526,7 +557,7 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	                 block_idx + 1, (unsigned int)chunk->block_count, (unsigned int)chunk->free_list,
 	                 (unsigned int)chunk->free_count);
 
-	size_t offset = header_size + (block_idx * size_class->size);
+	size_t offset = header_size + ((size_t)block_idx * size_class->size);
 	MEMORY_ASSERT(offset < MAX_CHUNK_SIZE);
 
 	void* allocated_memory = pointer_offset(chunk, offset);
@@ -544,7 +575,7 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 	size_t header_size = _memory_chunk_header_size(chunk->block_count);
 
 	void* block_start = pointer_offset(chunk, header_size);
-	size_t block_idx = pointer_diff(p, block_start) / size_class->size;
+	size_t block_idx = (size_t)pointer_diff(p, block_start) / size_class->size;
 
 	bool was_full = !chunk->free_count;
 
@@ -651,6 +682,9 @@ _memory_initialize(void) {
 	if (system_info.dwAllocationGranularity < 0x1000)
 		return -1;
 #endif
+#if FOUNDATION_PLATFORM_POSIX
+	atomic_store64(&_memory_addr, 0x1000000000ULL);
+#endif
 	return 0;
 }
 
@@ -671,7 +705,7 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 			++num_pages;
 		chunk_t* chunk = _memory_allocate_raw(0, num_pages);
 		chunk->size_class = 0xFF;
-		size_t* chunk_page_count = (size_t*)chunk->next_block;
+		size_t* chunk_page_count = (size_t*)((void*)chunk);
 		*chunk_page_count = num_pages;
 		return pointer_offset(chunk, CHUNK_HEADER_SIZE);
 	}
@@ -693,12 +727,14 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 }
 
 static void*
-_memory_reallocate(void* p, uint64_t size, unsigned int align, uint64_t oldsize) {
+_memory_reallocate(void* p, size_t size, unsigned int align, size_t oldsize) {
 	heap_t* heap = get_thread_heap();
 
-	chunk_t* chunk;
+	FOUNDATION_UNUSED(align);
+
+	chunk_t* chunk = 0;
 	if (p) {
-		chunk = (void*)((uintptr_t)p & PAGE_MASK);
+		chunk = (void*)((uintptr_t)p & (uintptr_t)PAGE_MASK);
 		if (chunk->size_class != 0xFF) {
 			if (heap && (chunk->heap_id == heap->id)) {
 				size_class_t* size_class = heap->size_class + chunk->size_class;
@@ -729,9 +765,9 @@ _memory_deallocate(void* p) {
 	if (!p)
 		return;
 
-	chunk_t* chunk = (void*)((uintptr_t)p & PAGE_MASK);
+	chunk_t* chunk = (void*)((uintptr_t)p & (uintptr_t)PAGE_MASK);
 	if (chunk->size_class == 0xFF) {
-		size_t* chunk_page_count = (size_t*)chunk->next_block;
+		size_t* chunk_page_count = (size_t*)((void*)chunk);
 		_memory_deallocate_raw(0, chunk, *chunk_page_count);
 		return;
 	}
