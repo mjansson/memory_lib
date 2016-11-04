@@ -20,13 +20,7 @@
 #include <memory/log.h>
 
 static memory_system_t _memory_system_to_test;
-
-/*
-static memory_system_t _memory_system;
-static memory_system_t _memory_system_malloc;
-static memory_system_t _memory_system_ptmalloc;
-static memory_system_t _memory_system_nedmalloc;
-*/
+static size_t _num_threads_to_test;
 
 typedef struct _benchmark_result {
 	tick_t  elapsed;
@@ -291,16 +285,22 @@ main_initialize(void) {
 	//log_set_suppress(HASH_BENCHMARK, ERRORLEVEL_DEBUG);
 
 	_memory_system_to_test = memory_system();
+	//_memory_system_to_test = memory_system_libc_malloc();
+	//_memory_system_to_test = memory_system_ptmalloc3();
+	//_memory_system_to_test = memory_system_nedmalloc();
+	//_memory_system_to_test = memory_system_tcmalloc();
 
 	if ((ret = foundation_initialize(_memory_system_to_test, app, config)) < 0)
 		return ret;
+
+	_num_threads_to_test = system_hardware_threads() + 1;
 
 	return 0;
 }
 
 int
 main_run(void* main_arg) {
-	int iloop, iseq;
+	int iloop;
 	unsigned int i;
 	benchmark_result_t res, res_worst, res_best;
 	thread_t thread[64];
@@ -318,13 +318,7 @@ main_run(void* main_arg) {
 	for (iloop = 0; iloop < 8192; ++iloop)
 		random_size[iloop] = random32_range(0, 8192);
 
-	num_thread = system_hardware_threads() + 1;
-	if (num_thread < 3)
-		num_thread = 3;
-	if (num_thread > 64)
-		num_thread = 64;
-
-	benchmark_result_t current;
+	num_thread = _num_threads_to_test;
 
 	//Warmup phase
 	log_infof(HASH_BENCHMARK, STRING_CONST("Benchmark initializing, running on %" PRIsize
@@ -332,78 +326,6 @@ main_run(void* main_arg) {
 	          system_hardware_threads(), num_thread);
 
 	_run_thread_warmup(&_memory_system_to_test);
-
-	log_info(HASH_BENCHMARK, STRING_CONST(""));
-	log_info(HASH_BENCHMARK, STRING_CONST("Single threaded sequential small allocation"));
-	log_info(HASH_BENCHMARK, STRING_CONST("==========================================="));
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		current = _run_small_allocation_loop(&_memory_system_to_test, ptr_memory[0], random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u allocs/s"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	log_info(HASH_BENCHMARK, STRING_CONST(""));
-	log_info(HASH_BENCHMARK, STRING_CONST("Single threaded random small allocation"));
-	log_info(HASH_BENCHMARK, STRING_CONST("======================================="));
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		current = _run_small_random_allocation_loop(&_memory_system_to_test, ptr_memory[0], random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u allocs/s"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	log_info(HASH_BENCHMARK, STRING_CONST(""));
-	log_info(HASH_BENCHMARK, STRING_CONST("Single threaded random reallocation"));
-	log_info(HASH_BENCHMARK, STRING_CONST("==================================="));
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		current = _run_small_random_reallocation_loop(&_memory_system_to_test, ptr_memory[0], random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u reallocs/s"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	log_info(HASH_BENCHMARK, STRING_CONST(""));
-	log_info(HASH_BENCHMARK, STRING_CONST("Single threaded random deallocation"));
-	log_info(HASH_BENCHMARK, STRING_CONST("==================================="));
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		current = _run_small_random_deallocation_loop(&_memory_system_to_test, ptr_memory[0], random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u deallocs/s"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
-
-	log_info(HASH_BENCHMARK, STRING_CONST(""));
-	log_info(HASH_BENCHMARK,
-	         STRING_CONST("Single threaded mixed allocation/reallocation/deallocation"));
-	log_info(HASH_BENCHMARK,
-	         STRING_CONST("=========================================================="));
-	res.elapsed = 0;
-	res.ops= 0;
-	for (iseq = 0; iseq < 16; ++iseq) {
-		current = _run_small_random_mixed_loop(&_memory_system_to_test, ptr_memory[0], random_size);
-		res.elapsed += current.elapsed;
-		res.ops += current.ops;
-	}
-	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u ops/s"),
-	          (double)time_ticks_to_seconds(res.elapsed),
-	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
 	log_info(HASH_BENCHMARK, STRING_CONST(""));
 	log_info(HASH_BENCHMARK, STRING_CONST("Multi threaded sequential small allocation"));
