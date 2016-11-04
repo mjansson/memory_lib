@@ -318,7 +318,7 @@ main_run(void* main_arg) {
 	for (iloop = 0; iloop < 8192; ++iloop)
 		random_size[iloop] = random32_range(0, 8192);
 
-	num_thread = system_hardware_threads() * 2;
+	num_thread = system_hardware_threads() + 1;
 	if (num_thread < 3)
 		num_thread = 3;
 	if (num_thread > 64)
