@@ -31,9 +31,6 @@
 
 //Thresholds
 
-//! Minimum number of free blocks before releasing chunks back to cache
-#define MINIMUM_NUMBER_OF_FREE_BLOCKS           8
-
 //! Minimum number of spans in thread cache after releasing spans to global cache
 #define MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS    8
 
@@ -300,20 +297,7 @@ _memory_global_cache_extract(size_t page_count) {
 }
 
 static void*
-_memory_allocate_raw(heap_t* heap, size_t page_count) {
-	//Check if we can find a span that matches the request
-	if (heap && (page_count < SPAN_CLASS_COUNT)) {
-		span_t* span = _memory_heap_cache_extract(heap, page_count);
-		if (span)
-			return span;
-
-		span = _memory_global_cache_extract(page_count);
-		if (span) {
-			heap->span_cache[page_count] = span->next_span;
-			return span;
-		}
-	}
-
+_memory_map(size_t page_count) {
 	void* pages_ptr = 0;
 
 #if FOUNDATION_PLATFORM_WINDOWS
@@ -344,6 +328,35 @@ _memory_allocate_raw(heap_t* heap, size_t page_count) {
 }
 
 static void
+_memory_unmap(void* ptr, size_t page_count) {
+#if FOUNDATION_PLATFORM_WINDOWS
+	FOUNDATION_UNUSED(page_count);
+	VirtualFree(ptr, 0, MEM_RELEASE);
+#endif
+#if FOUNDATION_PLATFORM_POSIX
+	munmap(ptr, PAGE_SIZE * page_count);
+#endif	
+}
+
+static void*
+_memory_allocate_raw(heap_t* heap, size_t page_count) {
+	//Check if we can find a span that matches the request
+	if (heap && (page_count < SPAN_CLASS_COUNT)) {
+		span_t* span = _memory_heap_cache_extract(heap, page_count);
+		if (span)
+			return span;
+
+		span = _memory_global_cache_extract(page_count);
+		if (span) {
+			heap->span_cache[page_count] = span->next_span;
+			return span;
+		}
+	}
+
+	return _memory_map(page_count);
+}
+
+static void
 _memory_deallocate_raw(heap_t* heap, void* ptr, size_t page_count) {
 	if (heap && (page_count < SPAN_CLASS_COUNT)) {
 		//Insert into heap span cache
@@ -363,99 +376,7 @@ _memory_deallocate_raw(heap_t* heap, void* ptr, size_t page_count) {
 		heap->span_cache[page_count] = heap->span_cache[page_count]->next_span;
 	}
 
-#if FOUNDATION_PLATFORM_WINDOWS
-	VirtualFree(ptr, 0, MEM_RELEASE);
-#endif
-#if FOUNDATION_PLATFORM_POSIX
-	munmap(ptr, PAGE_SIZE * page_count);
-#endif
-}
-
-static void
-_memory_adjust_size_class(heap_t* heap, size_t iclass) {
-	size_t block_size = heap->size_class[iclass].size;
-	size_t block_count = ((PAGE_SIZE - sizeof(chunk_t)) / (block_size + 1));
-	size_t header_size = _memory_chunk_header_size(block_count);
-	if (!block_count)
-		++block_count;
-	if (header_size + (block_size * block_count) > PAGE_SIZE)
-		--block_count;
-	size_t wasted = (PAGE_SIZE - header_size) - (block_size * block_count);
-
-	size_t page_size_counter = 1;
-	size_t overhead = wasted + header_size;
-
-	float current_factor = (float)overhead / ((float)block_count * (float)block_size);
-	float best_factor = current_factor;
-	size_t best_wasted = wasted;
-	size_t best_overhead = overhead;
-	size_t best_page_count = page_size_counter;
-	size_t best_block_count = block_count;
-
-	while ((((float)wasted / (float)block_count) > ((float)block_size / 32.0f))) {
-		size_t page_size = PAGE_SIZE * (++page_size_counter);
-		if (page_size > PAGE_SIZE*MAX_PAGE_COUNT)
-			break;
-		block_count = ((page_size - sizeof(chunk_t)) / (block_size + 1));
-		if (block_count > 255)
-			break;
-		if (!block_count)
-			++block_count;
-		header_size = _memory_chunk_header_size(block_count);
-		if (header_size + (block_size * block_count) > page_size)
-			--block_count;
-		wasted = (page_size - header_size) - (block_size * block_count);
-		overhead = wasted + header_size;
-
-		current_factor = (float)overhead / ((float)block_count * (float)block_size);
-		if (current_factor < best_factor) {
-			best_factor = current_factor;
-			best_page_count = page_size_counter;
-			best_wasted = wasted;
-			best_overhead = overhead;
-			best_block_count = block_count;
-		}
-	}
-	log_memory_spamf("Size class %" PRIsize ": %" PRIsize " pages, %" PRIsize " bytes, %" PRIsize
-	                 " blocks of %" PRIsize " bytes (%" PRIsize " wasted, %" PRIsize " overhead, %.2f%%)",
-	                 iclass, best_page_count, PAGE_SIZE * best_page_count, best_block_count, block_size, best_wasted,
-	                 best_overhead, 100.0f * best_factor);
-
-	heap->size_class[iclass].page_count = (uint16_t)best_page_count;
-	heap->size_class[iclass].block_count = (uint16_t)best_block_count;
-
-	//Check if previous size class can be merged
-	if ((iclass > 0) &&
-	        (heap->size_class[iclass-1].page_count == heap->size_class[iclass].page_count) &&
-	        (heap->size_class[iclass-1].block_count == heap->size_class[iclass].block_count)) {
-		log_memory_spam("  merge previous size class");
-		heap->size_class[iclass-1].size = 0;
-	}
-}
-
-static heap_t*
-_memory_allocate_heap(void) {
-	size_t iclass;
-	heap_t* heap = _memory_allocate_raw(0, 1);
-	memset(heap, 0, sizeof(heap_t));
-
-	for (iclass = 0; iclass < SMALL_CLASS_COUNT; ++iclass) {
-		size_t size = (iclass + 1) * SMALL_GRANULARITY;
-		heap->size_class[iclass].size = (uint16_t)size;
-
-		_memory_adjust_size_class(heap, iclass);
-	}
-
-	for (iclass = 0; iclass < MEDIUM_CLASS_COUNT; ++iclass) {
-		size_t size = SMALL_SIZE_LIMIT + ((iclass + 1) * MEDIUM_SIZE_INCR);
-		heap->size_class[SMALL_CLASS_COUNT + iclass].size = (uint16_t)size;
-
-		_memory_adjust_size_class(heap, SMALL_CLASS_COUNT + iclass);
-	}
-
-	heap->id = (uint16_t)atomic_incr32(&_memory_heap_id);
-
-	return heap;
+	_memory_unmap(ptr, page_count);
 }
 
 static void*
@@ -602,35 +523,37 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 
 	++size_class->free_count;
 	++chunk->free_count;
-	if ((chunk->free_count == chunk->block_count) && size_class->free_chunk_list &&
-	        (size_class->free_count > (size_class->block_count * 2)) &&
-	        (size_class->free_count > MINIMUM_NUMBER_OF_FREE_BLOCKS)) {
-		//Chunk went from full or partial free -> free
-		//Check if there is another chunk with available blocks, if so return pages
-		//From free_chunk_list check above we know there is at least one chunk at least partial free
-		int32_t chunk_offset = (int32_t)pointer_diff_pages(chunk, heap);
-		MEMORY_ASSERT(was_full || (size_class->free_chunk_list != chunk_offset) || chunk->next_chunk);
-		if (size_class->free_chunk_list == chunk_offset) {
-			MEMORY_ASSERT(chunk->next_chunk);
-			chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
-			size_class->free_chunk_list = (int32_t)pointer_diff_pages(next_chunk, heap);
-			MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == next_chunk);
-		}
-		else if (!was_full) {
-			//If this chunk was not first in free_chunk_list, it must have a previous chunk in list
-			MEMORY_ASSERT(chunk->prev_chunk);
-			chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
-			if (chunk->next_chunk) {
-				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
-				prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
-				next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
+	if (chunk->free_count == chunk->block_count) {
+		//If chunk went from partial free -> free, remove it from the free_chunk_list
+		if (!was_full) {
+			int32_t chunk_offset = (int32_t)pointer_diff_pages(chunk, heap);
+			if (size_class->free_chunk_list == chunk_offset) {
+				if (chunk->next_chunk) {
+					chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+					size_class->free_chunk_list = (int32_t)pointer_diff_pages(next_chunk, heap);
+					MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == next_chunk);
+				}
+				else {
+					size_class->free_chunk_list = 0;
+				}
 			}
 			else {
-				prev_chunk->next_chunk = 0;
+				//If this chunk was not first in free_chunk_list, it must have a previous chunk in list
+				MEMORY_ASSERT(chunk->prev_chunk);
+				chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
+				if (chunk->next_chunk) {
+					chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+					prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
+					next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
+				}
+				else {
+					prev_chunk->next_chunk = 0;
+				}
 			}
-		}
 
-		MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
+			MEMORY_ASSERT((!size_class->full_chunk_list && !size_class->free_chunk_list) ||
+			              (size_class->full_chunk_list != size_class->free_chunk_list));
+		}
 
 		size_class->free_count -= size_class->block_count;
 
@@ -662,6 +585,93 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 	MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == chunk);
 
 	MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
+}
+
+static void
+_memory_adjust_size_class(heap_t* heap, size_t iclass) {
+	size_t block_size = heap->size_class[iclass].size;
+	size_t block_count = ((PAGE_SIZE - sizeof(chunk_t)) / (block_size + 1));
+	size_t header_size = _memory_chunk_header_size(block_count);
+	if (!block_count)
+		++block_count;
+	if (header_size + (block_size * block_count) > PAGE_SIZE)
+		--block_count;
+	size_t wasted = (PAGE_SIZE - header_size) - (block_size * block_count);
+
+	size_t page_size_counter = 1;
+	size_t overhead = wasted + header_size;
+
+	float current_factor = (float)overhead / ((float)block_count * (float)block_size);
+	float best_factor = current_factor;
+	size_t best_wasted = wasted;
+	size_t best_overhead = overhead;
+	size_t best_page_count = page_size_counter;
+	size_t best_block_count = block_count;
+
+	while ((((float)wasted / (float)block_count) > ((float)block_size / 32.0f))) {
+		size_t page_size = PAGE_SIZE * (++page_size_counter);
+		if (page_size > PAGE_SIZE*MAX_PAGE_COUNT)
+			break;
+		block_count = ((page_size - sizeof(chunk_t)) / (block_size + 1));
+		if (block_count > 255)
+			break;
+		if (!block_count)
+			++block_count;
+		header_size = _memory_chunk_header_size(block_count);
+		if (header_size + (block_size * block_count) > page_size)
+			--block_count;
+		wasted = (page_size - header_size) - (block_size * block_count);
+		overhead = wasted + header_size;
+
+		current_factor = (float)overhead / ((float)block_count * (float)block_size);
+		if (current_factor < best_factor) {
+			best_factor = current_factor;
+			best_page_count = page_size_counter;
+			best_wasted = wasted;
+			best_overhead = overhead;
+			best_block_count = block_count;
+		}
+	}
+	log_memory_spamf("Size class %" PRIsize ": %" PRIsize " pages, %" PRIsize " bytes, %" PRIsize
+	                 " blocks of %" PRIsize " bytes (%" PRIsize " wasted, %" PRIsize " overhead, %.2f%%)",
+	                 iclass, best_page_count, PAGE_SIZE * best_page_count, best_block_count, block_size, best_wasted,
+	                 best_overhead, 100.0f * best_factor);
+
+	heap->size_class[iclass].page_count = (uint16_t)best_page_count;
+	heap->size_class[iclass].block_count = (uint16_t)best_block_count;
+
+	//Check if previous size class can be merged
+	if ((iclass > 0) &&
+	        (heap->size_class[iclass-1].page_count == heap->size_class[iclass].page_count) &&
+	        (heap->size_class[iclass-1].block_count == heap->size_class[iclass].block_count)) {
+		log_memory_spam("  merge previous size class");
+		heap->size_class[iclass-1].size = 0;
+	}
+}
+
+static heap_t*
+_memory_allocate_heap(void) {
+	size_t iclass;
+	heap_t* heap = _memory_allocate_raw(0, 1);
+	memset(heap, 0, sizeof(heap_t));
+
+	for (iclass = 0; iclass < SMALL_CLASS_COUNT; ++iclass) {
+		size_t size = (iclass + 1) * SMALL_GRANULARITY;
+		heap->size_class[iclass].size = (uint16_t)size;
+
+		_memory_adjust_size_class(heap, iclass);
+	}
+
+	for (iclass = 0; iclass < MEDIUM_CLASS_COUNT; ++iclass) {
+		size_t size = SMALL_SIZE_LIMIT + ((iclass + 1) * MEDIUM_SIZE_INCR);
+		heap->size_class[SMALL_CLASS_COUNT + iclass].size = (uint16_t)size;
+
+		_memory_adjust_size_class(heap, SMALL_CLASS_COUNT + iclass);
+	}
+
+	heap->id = (uint16_t)atomic_incr32(&_memory_heap_id);
+
+	return heap;
 }
 
 static void*
@@ -772,6 +782,32 @@ static void
 _memory_finalize(void) {
 }
 
+static void
+_memory_thread_finalize(void) {
+	heap_t* heap;
+	size_t ispan;
+
+	heap = get_thread_heap();
+	if (!heap)
+		return;
+
+	//Return all possible thread cache spans to global cache, then release remaining spans
+	for (ispan = 0; ispan < SPAN_CLASS_COUNT; ++ispan) {
+		span_t* span;
+		span_t* next_span;
+		while (heap->span_cache[ispan] && (heap->span_cache[ispan]->total_span_count >= MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS)) {
+			next_span = _memory_global_cache_insert(heap->span_cache[ispan], ispan);
+			if (next_span == heap->span_cache[ispan])
+				break;
+			heap->span_cache[ispan] = next_span;
+		}
+
+		for (span = heap->span_cache[ispan]; span; span = next_span) {
+			next_span = span->next_span;
+			_memory_unmap(span, ispan);
+		}
+	}
+}
 
 memory_system_t
 memory_system(void) {
@@ -781,5 +817,6 @@ memory_system(void) {
 	memsystem.deallocate = _memory_deallocate;
 	memsystem.initialize = _memory_initialize;
 	memsystem.finalize = _memory_finalize;
+	memsystem.thread_finalize = _memory_thread_finalize;
 	return memsystem;
 }

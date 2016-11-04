@@ -21,10 +21,12 @@
 
 static memory_system_t _memory_system_to_test;
 
+/*
 static memory_system_t _memory_system;
 static memory_system_t _memory_system_malloc;
 static memory_system_t _memory_system_ptmalloc;
 static memory_system_t _memory_system_nedmalloc;
+*/
 
 typedef struct _benchmark_result {
 	tick_t  elapsed;
@@ -342,7 +344,7 @@ main_run(void* main_arg) {
 		res.ops += current.ops;
 	}
 	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u allocs/s"),
-	          time_ticks_to_seconds(res.elapsed),
+	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
 	log_info(HASH_BENCHMARK, STRING_CONST(""));
@@ -356,7 +358,7 @@ main_run(void* main_arg) {
 		res.ops += current.ops;
 	}
 	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u allocs/s"),
-	          time_ticks_to_seconds(res.elapsed),
+	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
 	log_info(HASH_BENCHMARK, STRING_CONST(""));
@@ -370,7 +372,7 @@ main_run(void* main_arg) {
 		res.ops += current.ops;
 	}
 	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u reallocs/s"),
-	          time_ticks_to_seconds(res.elapsed),
+	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
 	log_info(HASH_BENCHMARK, STRING_CONST(""));
@@ -384,7 +386,7 @@ main_run(void* main_arg) {
 		res.ops += current.ops;
 	}
 	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u deallocs/s"),
-	          time_ticks_to_seconds(res.elapsed),
+	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
 	log_info(HASH_BENCHMARK, STRING_CONST(""));
@@ -400,7 +402,7 @@ main_run(void* main_arg) {
 		res.ops += current.ops;
 	}
 	log_infof(HASH_BENCHMARK, STRING_CONST("Time: %.4" PRIreal "s : %u ops/s"),
-	          time_ticks_to_seconds(res.elapsed),
+	          (double)time_ticks_to_seconds(res.elapsed),
 	          (unsigned int)((real)res.ops / time_ticks_to_seconds(res.elapsed)));
 
 	log_info(HASH_BENCHMARK, STRING_CONST(""));
