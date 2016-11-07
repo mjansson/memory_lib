@@ -29,6 +29,13 @@
 #  endif
 #endif
 
+//Main entry points
+static void*
+_memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint);
+
+static void
+_memory_deallocate(void* p);
+
 //Thresholds
 
 //! Minimum number of spans in thread cache after releasing spans to global cache
@@ -131,8 +138,12 @@ struct heap_t {
 	size_class_t size_class[SIZE_CLASS_COUNT];
 	//! Free spans
 	span_t* span_cache[SPAN_CLASS_COUNT];
+	//! Next heap in list
+	heap_t* next_heap;
 	//! Heap ID
 	uint16_t id;
+	//! Deallocate delegation list
+	atomicptr_t delegated_deallocate;
 };
 
 //! Span of pages
@@ -146,16 +157,42 @@ struct span_t {
 	//! Total number of pages in span cache
 	size_t total_page_count;
 };
-
 FOUNDATION_STATIC_ASSERT(sizeof(heap_t) <= PAGE_SIZE, "Invalid heap size");
 
 FOUNDATION_DECLARE_THREAD_LOCAL(heap_t*, heap, 0)
+
+typedef struct memory_statistics_atomic_t memory_statistics_atomic_t;
+struct memory_statistics_atomic_t {
+	/*! Number of allocations in total, running counter */
+	atomic64_t allocations_total;
+	/*! Number fo allocations, current */
+	atomic64_t allocations_current;
+	/*! Number of allocated bytes in total, running counter */
+	atomic64_t allocated_total;
+	/*! Number of allocated bytes, current */
+	atomic64_t allocated_current;
+	/*! Number of allocated bytes in total (including overhead), running counter */
+	atomic64_t allocated_total_raw;
+	/*! Number of allocated bytes (including overhead), current */
+	atomic64_t allocated_current_raw;
+};
+FOUNDATION_STATIC_ASSERT(sizeof(memory_statistics_detail_t) == sizeof(memory_statistics_atomic_t),
+                         "Statistics size mismatch");
 
 static atomic32_t _memory_heap_id;
 static atomicptr_t _memory_span_cache[SPAN_CLASS_COUNT];
 
 #if FOUNDATION_PLATFORM_POSIX
 static atomic64_t _memory_addr;
+#endif
+
+#define HEAP_ARRAY_SIZE 197
+static heap_t* _memory_heaps[HEAP_ARRAY_SIZE];
+static mutex_t* _memory_heaps_lock;
+static atomicptr_t _memory_delegated_deallocate;
+
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+static memory_statistics_atomic_t _memory_statistics;
 #endif
 
 static size_t
@@ -379,6 +416,50 @@ _memory_deallocate_raw(heap_t* heap, void* ptr, size_t page_count) {
 	_memory_unmap(ptr, page_count);
 }
 
+static int32_t
+_memory_heap_add_chunk_to_list(heap_t* heap, int32_t list_head, chunk_t* chunk) {
+	if (list_head) {
+		chunk_t* next_chunk = pointer_offset_pages(heap, list_head);
+		chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, chunk);
+		next_chunk->prev_chunk = (int32_t)pointer_diff_pages(chunk, next_chunk);
+	}
+	else {
+		chunk->next_chunk = 0;
+	}
+	list_head = (int32_t)pointer_diff_pages(chunk, heap);
+	MEMORY_ASSERT(pointer_offset_pages(heap, list_head) == chunk);
+	return list_head;
+}
+
+static int32_t
+_memory_heap_remove_chunk_from_list(heap_t* heap, int32_t list_head, chunk_t* chunk) {
+	int32_t chunk_offset = (int32_t)pointer_diff_pages(chunk, heap);
+	if (list_head == chunk_offset) {
+		if (chunk->next_chunk) {
+			chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+			list_head = (int32_t)pointer_diff_pages(next_chunk, heap);
+			MEMORY_ASSERT(pointer_offset_pages(heap, list_head) == next_chunk);
+		}
+		else {
+			list_head = 0;
+		}
+	}
+	else {
+		//If this chunk was not first in free_chunk_list, it must have a previous chunk in list
+		MEMORY_ASSERT(chunk->prev_chunk);
+		chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
+		if (chunk->next_chunk) {
+			chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
+			prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
+			next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
+		}
+		else {
+			prev_chunk->next_chunk = 0;
+		}
+	}
+	return list_head;
+}
+
 static void*
 _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	size_t class_idx = (size ? (size-1) : 0) / SMALL_GRANULARITY;
@@ -428,40 +509,8 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 
 	if (!chunk->free_count) {
 		//Move chunk to start of full chunks
-		if (size_class->free_chunk_list == (int32_t)pointer_diff_pages(chunk, heap)) {
-			if (chunk->next_chunk) {
-				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
-				size_class->free_chunk_list = (int32_t)pointer_diff_pages(next_chunk, heap);
-				MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == next_chunk);
-			}
-			else {
-				size_class->free_chunk_list = 0;
-			}
-		}
-		else {
-			//If this chunk was not first in free_chunk_list, it must have a previous chunk in list
-			MEMORY_ASSERT(chunk->prev_chunk);
-			chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
-			if (chunk->next_chunk) {
-				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
-				prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
-				next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
-			}
-			else {
-				prev_chunk->next_chunk = 0;
-			}
-		}
-
-		if (size_class->full_chunk_list) {
-			chunk_t* next_chunk = pointer_offset_pages(heap, size_class->full_chunk_list);
-			chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, chunk);
-			next_chunk->prev_chunk = (int32_t)pointer_diff_pages(chunk, next_chunk);
-		}
-		else {
-			chunk->next_chunk = 0;
-		}
-		size_class->full_chunk_list = (int32_t)pointer_diff_pages(chunk, heap);
-
+		size_class->free_chunk_list = _memory_heap_remove_chunk_from_list(heap, size_class->free_chunk_list, chunk);
+		size_class->full_chunk_list = _memory_heap_add_chunk_to_list(heap, size_class->full_chunk_list, chunk);
 		MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
 	}
 	else {
@@ -497,28 +546,7 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 
 	if (was_full) {
 		//Remove chunk from list of full chunks
-		if (size_class->full_chunk_list == (int32_t)pointer_diff_pages(chunk, heap)) {
-			if (chunk->next_chunk) {
-				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
-				size_class->full_chunk_list = (int32_t)pointer_diff_pages(next_chunk, heap);
-			}
-			else {
-				size_class->full_chunk_list = 0;
-			}
-		}
-		else {
-			//If this chunk was not first in full_chunk_list, it must have a previous chunk in list
-			MEMORY_ASSERT(chunk->prev_chunk);
-			chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
-			if (chunk->next_chunk) {
-				chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
-				prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
-				next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
-			}
-			else {
-				prev_chunk->next_chunk = 0;
-			}
-		}
+		size_class->full_chunk_list = _memory_heap_remove_chunk_from_list(heap, size_class->full_chunk_list, chunk);
 	}
 
 	++size_class->free_count;
@@ -526,31 +554,7 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 	if (chunk->free_count == chunk->block_count) {
 		//If chunk went from partial free -> free, remove it from the free_chunk_list
 		if (!was_full) {
-			int32_t chunk_offset = (int32_t)pointer_diff_pages(chunk, heap);
-			if (size_class->free_chunk_list == chunk_offset) {
-				if (chunk->next_chunk) {
-					chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
-					size_class->free_chunk_list = (int32_t)pointer_diff_pages(next_chunk, heap);
-					MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == next_chunk);
-				}
-				else {
-					size_class->free_chunk_list = 0;
-				}
-			}
-			else {
-				//If this chunk was not first in free_chunk_list, it must have a previous chunk in list
-				MEMORY_ASSERT(chunk->prev_chunk);
-				chunk_t* prev_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->prev_chunk);
-				if (chunk->next_chunk) {
-					chunk_t* next_chunk = (chunk_t*)pointer_offset_pages(chunk, chunk->next_chunk);
-					prev_chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, prev_chunk);
-					next_chunk->prev_chunk = (int32_t)pointer_diff_pages(prev_chunk, next_chunk);
-				}
-				else {
-					prev_chunk->next_chunk = 0;
-				}
-			}
-
+			size_class->free_chunk_list = _memory_heap_remove_chunk_from_list(heap, size_class->free_chunk_list, chunk);
 			MEMORY_ASSERT((!size_class->full_chunk_list && !size_class->free_chunk_list) ||
 			              (size_class->full_chunk_list != size_class->free_chunk_list));
 		}
@@ -573,18 +577,79 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 	}
 
 	//Chunk went from full -> partial free, add to list
-	if (size_class->free_chunk_list) {
-		chunk_t* next_chunk = pointer_offset_pages(heap, size_class->free_chunk_list);
-		chunk->next_chunk = (int32_t)pointer_diff_pages(next_chunk, chunk);
-		next_chunk->prev_chunk = (int32_t)pointer_diff_pages(chunk, next_chunk);
-	}
-	else {
-		chunk->next_chunk = 0;
-	}
-	size_class->free_chunk_list = (int32_t)pointer_diff_pages(chunk, heap);
-	MEMORY_ASSERT(pointer_offset_pages(heap, size_class->free_chunk_list) == chunk);
-
+	size_class->free_chunk_list = _memory_heap_add_chunk_to_list(heap, size_class->free_chunk_list, chunk);
 	MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
+}
+
+static void
+_memory_deallocate_from_other_heap(heap_t* heap, chunk_t* chunk, void* p) {
+	//Delegate to correct thread, or adopt if orphaned and we have a heap
+	//If neither, delegate to global orphaned list
+	if (_memory_heaps_lock)
+		mutex_lock(_memory_heaps_lock);
+
+	size_t list_idx = chunk->heap_id % HEAP_ARRAY_SIZE;
+	heap_t* other_heap = _memory_heaps[list_idx];
+	while (!other_heap || (other_heap->id != chunk->heap_id))
+		other_heap = other_heap->next_heap;
+	if (other_heap) {
+		//Delegate to heap
+		void* last_ptr;
+		void* new_ptr = p;
+		do {
+			last_ptr = atomic_load_ptr(&other_heap->delegated_deallocate);
+			*(void**)p = last_ptr;
+		} while (!atomic_cas_ptr(&other_heap->delegated_deallocate, new_ptr, last_ptr));
+		chunk = 0;
+	}
+
+	if (_memory_heaps_lock)
+		mutex_unlock(_memory_heaps_lock);
+
+	if (chunk) {
+		if (heap) {
+			//Adopt chunk and free block
+			size_t class_idx = chunk->size_class;
+			size_class_t* size_class = heap->size_class + class_idx;
+			if (chunk->free_count)
+				size_class->free_chunk_list = _memory_heap_add_chunk_to_list(heap, size_class->free_chunk_list, chunk);
+			else
+				size_class->full_chunk_list = _memory_heap_add_chunk_to_list(heap, size_class->full_chunk_list, chunk);
+			MEMORY_ASSERT(size_class->full_chunk_list != size_class->free_chunk_list);
+			_memory_deallocate_from_heap(heap, chunk, p);
+		}
+		else {
+			//Delegate to global orhpan list
+			void* last_ptr;
+			void* new_ptr = p;
+			do {
+				last_ptr = atomic_load_ptr(&_memory_delegated_deallocate);
+				*(void**)p = last_ptr;
+			} while (!atomic_cas_ptr(&_memory_delegated_deallocate, new_ptr, last_ptr));
+		}
+	}
+}
+
+static void
+_memory_deallocate_delegated(heap_t* heap) {
+	atomic_thread_fence_acquire();
+	void* p = atomic_load_ptr(&heap->delegated_deallocate);
+	if (p && atomic_cas_ptr(&heap->delegated_deallocate, 0, p)) {
+		do {
+			void* next = *(void**)p;
+			_memory_deallocate(p);
+			p = next;
+		} while (p);
+	}
+
+	p = atomic_load_ptr(&_memory_delegated_deallocate);
+	if (p && atomic_cas_ptr(&_memory_delegated_deallocate, 0, p)) {
+		do {
+			void* next = *(void**)p;
+			_memory_deallocate(p);
+			p = next;
+		} while (p);
+	}
 }
 
 static void
@@ -652,7 +717,7 @@ _memory_adjust_size_class(heap_t* heap, size_t iclass) {
 static heap_t*
 _memory_allocate_heap(void) {
 	size_t iclass;
-	heap_t* heap = _memory_allocate_raw(0, 1);
+	heap_t* heap = _memory_map(1);
 	memset(heap, 0, sizeof(heap_t));
 
 	for (iclass = 0; iclass < SMALL_CLASS_COUNT; ++iclass) {
@@ -671,7 +736,60 @@ _memory_allocate_heap(void) {
 
 	heap->id = (uint16_t)atomic_incr32(&_memory_heap_id);
 
+	if (_memory_heaps_lock)
+		mutex_lock(_memory_heaps_lock);
+
+	size_t list_idx = heap->id % HEAP_ARRAY_SIZE;
+	heap->next_heap = _memory_heaps[list_idx];
+	_memory_heaps[list_idx] = heap;
+
+	if (_memory_heaps_lock)
+		mutex_unlock(_memory_heaps_lock);
+
 	return heap;
+}
+
+static void
+_memory_deallocate_heap(heap_t* heap) {
+	//unlink heap from heap lists arrays
+	if (_memory_heaps_lock)
+		mutex_lock(_memory_heaps_lock);
+
+	size_t list_idx = heap->id % HEAP_ARRAY_SIZE;
+	if (_memory_heaps[list_idx] == heap) {
+		_memory_heaps[list_idx] = heap->next_heap;
+	}
+	else {
+		heap_t* prev = _memory_heaps[list_idx];
+		while (prev && (prev->next_heap != heap))
+			prev = prev->next_heap;
+		if (prev)
+			prev->next_heap = heap->next_heap;
+	}
+
+	if (_memory_heaps_lock)
+		mutex_unlock(_memory_heaps_lock);
+
+	for (size_t ispan = 0; ispan < SPAN_CLASS_COUNT; ++ispan) {
+		span_t* span;
+		span_t* next_span;
+
+		//Return all possible thread cache spans to global cache
+		while (heap->span_cache[ispan] && (heap->span_cache[ispan]->total_span_count >= MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS)) {
+			next_span = _memory_global_cache_insert(heap->span_cache[ispan], ispan);
+			if (next_span == heap->span_cache[ispan])
+				break;
+			heap->span_cache[ispan] = next_span;
+		}
+
+		//Release remaining thread cache spans
+		for (span = heap->span_cache[ispan]; span; span = next_span) {
+			next_span = span->next_span;
+			_memory_unmap(span, ispan);
+		}
+	}
+
+	_memory_unmap(heap, 1);
 }
 
 static void*
@@ -701,36 +819,11 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 		set_thread_heap(heap);
 	}
 
+	_memory_deallocate_delegated(heap);
+
 	void* block = _memory_allocate_from_heap(heap, size);
 	if (block && (hint & MEMORY_ZERO_INITIALIZED))
 		memset(block, 0, size);
-
-	return block;
-}
-
-static void*
-_memory_reallocate(void* p, size_t size, unsigned int align, size_t oldsize) {
-	heap_t* heap = get_thread_heap();
-
-	FOUNDATION_UNUSED(align);
-
-	chunk_t* chunk = 0;
-	if (p) {
-		chunk = (void*)((uintptr_t)p & (uintptr_t)PAGE_MASK);
-		if (chunk->size_class != 0xFF) {
-			if (heap && (chunk->heap_id == heap->id)) {
-				size_class_t* size_class = heap->size_class + chunk->size_class;
-				if (size_class->size >= size)
-					return p; //Still fits in block
-			}
-		}
-	}
-
-	void* block = _memory_allocate(0, size, align, 0);
-	if (p) {
-		memcpy(block, p, oldsize < size ? oldsize : size);
-		_memory_deallocate_from_heap(heap, chunk, p);
-	}
 
 	return block;
 }
@@ -748,14 +841,44 @@ _memory_deallocate(void* p) {
 	}
 
 	heap_t* heap = get_thread_heap();
-	if (!heap || (chunk->heap_id != heap->id)) {
-		//Delegate to correct thread, or adopt if orphaned and we have a heap
-		//If neither, delegate to first thread we can find
-		FOUNDATION_ASSERT(false);
-		return;
+	if (heap && (chunk->heap_id == heap->id)) {		
+		_memory_deallocate_from_heap(heap, chunk, p);
+	}
+	else {
+		_memory_deallocate_from_other_heap(heap, chunk, p);
 	}
 
-	_memory_deallocate_from_heap(heap, chunk, p);
+	if (heap)
+		_memory_deallocate_delegated(heap);
+}
+
+static void*
+_memory_reallocate(void* p, size_t size, unsigned int align, size_t oldsize) {
+	heap_t* heap = get_thread_heap();
+
+	FOUNDATION_UNUSED(align);
+
+	chunk_t* chunk = 0;
+	if (p) {
+		chunk = (void*)((uintptr_t)p & (uintptr_t)PAGE_MASK);
+		if (chunk->size_class != 0xFF) {
+			//All heaps have the same size_class setup, safe to use this even if chunk
+			//is allocated from some other heap
+			if (heap) {
+				size_class_t* size_class = heap->size_class + chunk->size_class;
+				if (size_class->size >= size)
+					return p; //Still fits in block
+			}
+		}
+	}
+
+	void* block = _memory_allocate(0, size, align, 0);
+	if (p) {
+		memcpy(block, p, oldsize < size ? oldsize : size);
+		_memory_deallocate(p);
+	}
+
+	return block;
 }
 
 
@@ -775,38 +898,29 @@ _memory_initialize(void) {
 #if FOUNDATION_PLATFORM_POSIX
 	atomic_store64(&_memory_addr, 0x1000000000ULL);
 #endif
+
+	_memory_heaps_lock = mutex_allocate(STRING_CONST("memory-heaps"));
+
 	return 0;
 }
 
 static void
 _memory_finalize(void) {
+	mutex_deallocate(_memory_heaps_lock);
+
+	for (size_t list_idx = 0; list_idx < HEAP_ARRAY_SIZE; ++list_idx) {
+		FOUNDATION_ASSERT(!_memory_heaps[list_idx]);
+	}
+
+	FOUNDATION_ASSERT(!atomic_load_ptr(&_memory_delegated_deallocate));
 }
 
 static void
 _memory_thread_finalize(void) {
-	heap_t* heap;
-	size_t ispan;
-
-	heap = get_thread_heap();
+	heap_t* heap = get_thread_heap();
 	if (!heap)
 		return;
-
-	//Return all possible thread cache spans to global cache, then release remaining spans
-	for (ispan = 0; ispan < SPAN_CLASS_COUNT; ++ispan) {
-		span_t* span;
-		span_t* next_span;
-		while (heap->span_cache[ispan] && (heap->span_cache[ispan]->total_span_count >= MINIMUM_NUMBER_OF_THREAD_CACHE_SPANS)) {
-			next_span = _memory_global_cache_insert(heap->span_cache[ispan], ispan);
-			if (next_span == heap->span_cache[ispan])
-				break;
-			heap->span_cache[ispan] = next_span;
-		}
-
-		for (span = heap->span_cache[ispan]; span; span = next_span) {
-			next_span = span->next_span;
-			_memory_unmap(span, ispan);
-		}
-	}
+	_memory_deallocate_heap(heap);
 }
 
 memory_system_t
@@ -820,3 +934,15 @@ memory_system(void) {
 	memsystem.thread_finalize = _memory_thread_finalize;
 	return memsystem;
 }
+
+memory_statistics_detail_t
+memory_statistics_detailed(void) {
+	memory_statistics_detail_t memory_statistics;
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	memcpy(&memory_statistics, &_memory_statistics, sizeof(memory_statistics));
+#else
+	memset(&memory_statistics, 0, sizeof(memory_statistics));
+#endif
+	return memory_statistics;
+}
+

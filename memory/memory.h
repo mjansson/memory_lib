@@ -27,3 +27,6 @@ memory_system(void);
 
 MEMORY_API version_t
 memory_module_version(void);
+
+MEMORY_API memory_statistics_detail_t
+memory_statistics_detailed(void);
