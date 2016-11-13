@@ -43,7 +43,7 @@ test_alloc_config(void) {
 
 static memory_system_t
 test_alloc_memory_system(void) {
-	return memory_system();
+	return memory_system_malloc();
 }
 
 static int 
@@ -66,6 +66,11 @@ DECLARE_TEST(alloc, alloc) {
 	unsigned int datasize[7] = { 473, 39, 195, 24, 73, 376, 245 };
 
 	memory_system_t memsys = memory_system();
+
+	memsys.initialize();
+	memsys.thread_finalize();
+	memsys.finalize();
+
 	memsys.initialize();
 
 	for (id = 0; id < 20000; ++id)
@@ -147,6 +152,7 @@ DECLARE_TEST(alloc, alloc) {
 			memsys.deallocate(addr[ipass]);
 	}
 
+	memsys.thread_finalize();
 	memsys.finalize();
 
 	return 0;
@@ -205,6 +211,8 @@ allocator_thread(void* argp) {
 		}
 	}
 
+	memsys.thread_finalize();
+
 	return 0;
 }
 
@@ -214,7 +222,7 @@ DECLARE_TEST(alloc, threaded) {
 	unsigned int i;
 	size_t num_alloc_threads;
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	volatile memory_statistics_t stat;
+	volatile memory_statistics_detail_t stat;
 #endif
 	allocator_thread_arg_t thread_arg;
 	memory_system_t memsys = memory_system();
@@ -227,24 +235,21 @@ DECLARE_TEST(alloc, threaded) {
 		num_alloc_threads = 32;
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	memory_detailed_statistics_reset();
-
-	stat = memory_detailed_statistics();
-
-	log_memory_info("STATISTICS AFTER INITIALIZE");
-	log_memory_infof("Raw current size: %llu", stat.allocated_current_raw);
-	log_memory_infof("Current size:     %llu", stat.allocated_current);
-	log_memory_info("");
-	log_memory_infof("Raw total size:   %llu", stat.allocated_total_raw);
-	log_memory_infof("Total size:       %llu", stat.allocated_total);
-	log_memory_info("");
-	log_memory_infof("Raw count:        %llu", stat.allocations_current_raw);
-	log_memory_infof("Count:            %llu", stat.allocations_current);
-	log_memory_info("");
-	log_memory_infof("Raw total count:  %llu", stat.allocations_total_raw);
-	log_memory_infof("Total count:      %llu", stat.allocations_total);
+	stat = memory_statistics_detailed();
+	log_memory_info(STRING_CONST("STATISTICS AFTER INITIALIZE"));
+	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
 #endif
-printf("Warm-up\n");
+
 	//Warm-up
 	thread_arg.memory_system = memsys;
 	thread_arg.loops = 100000;
@@ -273,11 +278,6 @@ printf("Warm-up\n");
 	thread_arg.datasize[6] = 389;
 	thread_arg.num_datasize = 7;
 
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	memory_statistics_reset();
-#endif
-printf("Test\n");
-
 	for (i = 0; i < num_alloc_threads; ++i) {
 		thread_initialize(thread + i, allocator_thread, &thread_arg, STRING_CONST("allocator"), THREAD_PRIORITY_NORMAL, 0);
 		thread_start(thread + i);
@@ -292,85 +292,38 @@ printf("Test\n");
 	}
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	stat = memory_statistics();
-
-	log_memory_info("STATISTICS AFTER TEST");
-	log_memory_infof("Raw current size: %llu", stat.allocated_current_raw);
-	log_memory_infof("Current size:     %llu", stat.allocated_current);
-	log_memory_info("");
-	log_memory_infof("Raw total size:   %llu", stat.allocated_total_raw);
-	log_memory_infof("Total size:       %llu", stat.allocated_total);
-	log_memory_info("");
-	log_memory_infof("Raw count:        %llu", stat.allocations_current_raw);
-	log_memory_infof("Count:            %llu", stat.allocations_current);
-	log_memory_info("");
-	log_memory_infof("Raw total count:  %llu", stat.allocations_total_raw);
-	log_memory_infof("Total count:      %llu", stat.allocations_total);
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS > 1
-	log_memory_info("");
-	log_memory_infof("Calls alloc oversize:           %llu", stat.allocations_calls_oversize);
-	log_memory_infof("Calls alloc heap:               %llu", stat.allocations_calls_heap);
-	log_memory_infof("Calls alloc heap loops:         %llu", stat.allocations_calls_heap_loops);
-	log_memory_info("");
-	for (i = 0; i < 32; ++i)
-		log_memory_infof("Calls alloc heap pool[%u]:  %llu", i, stat.allocations_calls_heap_pool[i]);
-	log_memory_info("");
-	log_memory_infof("New descriptor alloc:           %llu",
-	                 stat.allocations_new_descriptor_superblock);
-	log_memory_infof("New descriptor dealloc:         %llu",
-	                 stat.allocations_new_descriptor_superblock_deallocations);
-	log_memory_info("");
-	log_memory_infof("Active block calls:             %llu", stat.allocations_calls_active);
-	log_memory_infof("Active block no active:         %llu", stat.allocations_calls_active_no_active);
-	log_memory_infof("Active block to partial:        %llu", stat.allocations_calls_active_to_partial);
-	log_memory_infof("Active block to active:         %llu", stat.allocations_calls_active_to_active);
-	log_memory_infof("Active block to full:           %llu", stat.allocations_calls_active_to_full);
-	log_memory_infof("Active block credits:           %llu", stat.allocations_calls_active_credits);
-	log_memory_info("");
-	log_memory_infof("Partial block calls:            %llu", stat.allocations_calls_partial);
-	log_memory_infof("Partial block tries:            %llu", stat.allocations_calls_partial_tries);
-	log_memory_infof("Partial block no descriptor:    %llu",
-	                 stat.allocations_calls_partial_no_descriptor);
-	//log_memory_infof( "Partial block full descriptor:  %llu", stat.allocations_calls_partial_full_descriptor );
-	log_memory_infof("Partial block to retire:        %llu", stat.allocations_calls_partial_to_retire);
-	log_memory_infof("Partial block to active:        %llu", stat.allocations_calls_partial_to_active);
-	log_memory_infof("Partial block to full:          %llu", stat.allocations_calls_partial_to_full);
-	log_memory_info("");
-	log_memory_infof("New block calls :               %llu", stat.allocations_calls_new_block);
-	log_memory_infof("New block early out:            %llu", stat.allocations_new_block_earlyouts);
-	log_memory_infof("New block alloc new:            %llu", stat.allocations_new_block_superblock);
-	log_memory_infof("New block hit pending:          %llu", stat.allocations_new_block_pending_hits);
-	log_memory_infof("New block new success:          %llu",
-	                 stat.allocations_new_block_superblock_success);
-	log_memory_infof("New block pending success:      %llu",
-	                 stat.allocations_new_block_pending_success);
-	log_memory_infof("New block new dealloc:          %llu",
-	                 stat.allocations_new_block_superblock_deallocations);
-	log_memory_infof("New block pending dealloc:      %llu",
-	                 stat.allocations_new_block_pending_deallocations);
-	log_memory_infof("New block new stored:           %llu",
-	                 stat.allocations_new_block_superblock_stores);
-	log_memory_infof("New block pending store:        %llu", stat.allocations_new_block_pending_stores);
-#endif
+	stat = memory_statistics_detailed();
+	log_memory_info(STRING_CONST("STATISTICS AFTER TEST"));
+	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
 #endif
 
+	memsys.thread_finalize();
 	memsys.finalize();
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	stat = memory_statistics();
-
-	log_memory_info("STATISTICS AFTER SHUTDOWN");
-	log_memory_infof("Raw current size: %llu", stat.allocated_current_raw);
-	log_memory_infof("Current size:     %llu", stat.allocated_current);
-	log_memory_info("");
-	log_memory_infof("Raw total size:   %llu", stat.allocated_total_raw);
-	log_memory_infof("Total size:       %llu", stat.allocated_total);
-	log_memory_info("");
-	log_memory_infof("Raw count:        %llu", stat.allocations_current_raw);
-	log_memory_infof("Count:            %llu", stat.allocations_current);
-	log_memory_info("");
-	log_memory_infof("Raw total count:  %llu", stat.allocations_total_raw);
-	log_memory_infof("Total count:      %llu", stat.allocations_total);
+	stat = memory_statistics_detailed();
+	log_memory_info(STRING_CONST("STATISTICS AFTER SHUTDOWN"));
+	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
 #endif
 
 	for (i = 0; i < num_alloc_threads; ++i)

@@ -163,18 +163,14 @@ FOUNDATION_DECLARE_THREAD_LOCAL(heap_t*, heap, 0)
 
 typedef struct memory_statistics_atomic_t memory_statistics_atomic_t;
 struct memory_statistics_atomic_t {
-	/*! Number of allocations in total, running counter */
 	atomic64_t allocations_total;
-	/*! Number fo allocations, current */
 	atomic64_t allocations_current;
-	/*! Number of allocated bytes in total, running counter */
 	atomic64_t allocated_total;
-	/*! Number of allocated bytes, current */
 	atomic64_t allocated_current;
-	/*! Number of allocated bytes in total (including overhead), running counter */
-	atomic64_t allocated_total_raw;
-	/*! Number of allocated bytes (including overhead), current */
-	atomic64_t allocated_current_raw;
+	atomic64_t allocations_total_virtual;
+	atomic64_t allocations_current_virtual;
+	atomic64_t allocated_total_virtual;
+	atomic64_t allocated_current_virtual;
 };
 FOUNDATION_STATIC_ASSERT(sizeof(memory_statistics_detail_t) == sizeof(memory_statistics_atomic_t),
                          "Statistics size mismatch");
@@ -361,6 +357,15 @@ _memory_map(size_t page_count) {
 	} while (true);
 #endif
 
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	atomic_incr64(&_memory_statistics.allocations_total_virtual);
+	atomic_incr64(&_memory_statistics.allocations_current_virtual);
+	if (pages_ptr) {
+		atomic_add64(&_memory_statistics.allocated_total_virtual, PAGE_SIZE * (int64_t)page_count);
+		atomic_add64(&_memory_statistics.allocated_current_virtual, PAGE_SIZE * (int64_t)page_count);
+	}
+#endif
+
 	return pages_ptr;
 }
 
@@ -373,12 +378,16 @@ _memory_unmap(void* ptr, size_t page_count) {
 #if FOUNDATION_PLATFORM_POSIX
 	munmap(ptr, PAGE_SIZE * page_count);
 #endif	
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	atomic_add64(&_memory_statistics.allocated_current_virtual, PAGE_SIZE * -(int64_t)page_count);
+	atomic_decr64(&_memory_statistics.allocations_current_virtual);
+#endif
 }
 
 static void*
 _memory_allocate_raw(heap_t* heap, size_t page_count) {
 	//Check if we can find a span that matches the request
-	if (heap && (page_count < SPAN_CLASS_COUNT)) {
+	if (FOUNDATION_LIKELY(heap && (page_count < SPAN_CLASS_COUNT))) {
 		span_t* span = _memory_heap_cache_extract(heap, page_count);
 		if (span)
 			return span;
@@ -395,7 +404,7 @@ _memory_allocate_raw(heap_t* heap, size_t page_count) {
 
 static void
 _memory_deallocate_raw(heap_t* heap, void* ptr, size_t page_count) {
-	if (heap && (page_count < SPAN_CLASS_COUNT)) {
+	if (FOUNDATION_LIKELY(heap && (page_count < SPAN_CLASS_COUNT))) {
 		//Insert into heap span cache
 		size_t thread_cache_count = _memory_heap_cache_insert(heap, ptr, page_count);
 		if (thread_cache_count <= MAXIMUM_NUMBER_OF_THREAD_CACHE_SPANS)
@@ -472,14 +481,19 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	while (size_class->size < size)
 		size_class = heap->size_class + (++class_idx);
 
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	atomic_add64(&_memory_statistics.allocated_total, (int64_t)size_class->size);
+	atomic_add64(&_memory_statistics.allocated_current, (int64_t)size_class->size);
+#endif
+
 	size_t header_size = _memory_chunk_header_size(size_class->block_count);
 
 	chunk_t* chunk = 0;
-	if (size_class->free_chunk_list) {
+	if (FOUNDATION_LIKELY(size_class->free_chunk_list)) {
 		chunk = pointer_offset_pages(heap, size_class->free_chunk_list);
 		MEMORY_ASSERT(chunk->free_count);
 	}
-	if (!chunk) {
+	if (FOUNDATION_UNLIKELY(!chunk)) {
 		//Allocate a memory page as new chunk
 		log_memory_spamf("Allocated a new chunk for size class %" PRIsize " (size %" PRIsize " -> %" PRIsize
 		                 ") : %" PRIsize " bytes, %" PRIsize " blocks\n",
@@ -507,7 +521,7 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	--chunk->free_count;
 	--size_class->free_count;
 
-	if (!chunk->free_count) {
+	if (FOUNDATION_UNLIKELY(!chunk->free_count)) {
 		//Move chunk to start of full chunks
 		size_class->free_chunk_list = _memory_heap_remove_chunk_from_list(heap, size_class->free_chunk_list, chunk);
 		size_class->full_chunk_list = _memory_heap_add_chunk_to_list(heap, size_class->full_chunk_list, chunk);
@@ -537,6 +551,10 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 	size_t class_idx = chunk->size_class;
 	size_class_t* size_class = heap->size_class + class_idx;
 
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	atomic_add64(&_memory_statistics.allocated_current, -(int64_t)size_class->size);
+#endif
+
 	size_t header_size = _memory_chunk_header_size(chunk->block_count);
 
 	void* block_start = pointer_offset(chunk, header_size);
@@ -544,14 +562,14 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 
 	bool was_full = !chunk->free_count;
 
-	if (was_full) {
+	if (FOUNDATION_UNLIKELY(was_full)) {
 		//Remove chunk from list of full chunks
 		size_class->full_chunk_list = _memory_heap_remove_chunk_from_list(heap, size_class->full_chunk_list, chunk);
 	}
 
 	++size_class->free_count;
 	++chunk->free_count;
-	if (chunk->free_count == chunk->block_count) {
+	if (FOUNDATION_UNLIKELY(chunk->free_count == chunk->block_count)) {
 		//If chunk went from partial free -> free, remove it from the free_chunk_list
 		if (!was_full) {
 			size_class->free_chunk_list = _memory_heap_remove_chunk_from_list(heap, size_class->free_chunk_list, chunk);
@@ -570,8 +588,8 @@ _memory_deallocate_from_heap(heap_t* heap, chunk_t* chunk, void* p) {
 	chunk->next_block[block_idx] = (int8_t)chunk->free_list - ((int8_t)block_idx + 1);
 	chunk->free_list = (uint8_t)block_idx;
 
-	//Check if we changed state from full -> partial free
-	if (!was_full) {
+	//Check if chunk was already partial free
+	if (FOUNDATION_LIKELY(!was_full)) {
 		MEMORY_ASSERT(size_class->free_chunk_list);
 		return;
 	}
@@ -632,6 +650,7 @@ _memory_deallocate_from_other_heap(heap_t* heap, chunk_t* chunk, void* p) {
 
 static void
 _memory_deallocate_delegated(heap_t* heap) {
+	//TODO: More direct implementation instead of reusing _memory_deallocate
 	atomic_thread_fence_acquire();
 	void* p = atomic_load_ptr(&heap->delegated_deallocate);
 	if (p && atomic_cas_ptr(&heap->delegated_deallocate, 0, p)) {
@@ -763,8 +782,7 @@ _memory_deallocate_heap(heap_t* heap) {
 		heap_t* prev = _memory_heaps[list_idx];
 		while (prev && (prev->next_heap != heap))
 			prev = prev->next_heap;
-		if (prev)
-			prev->next_heap = heap->next_heap;
+		prev->next_heap = heap->next_heap;
 	}
 
 	if (_memory_heaps_lock)
@@ -798,7 +816,12 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 	FOUNDATION_UNUSED(context);
 	FOUNDATION_UNUSED(align);
 
-	if (size > MEDIUM_SIZE_LIMIT) {
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	atomic_incr64(&_memory_statistics.allocations_total);
+	atomic_incr64(&_memory_statistics.allocations_current);
+#endif
+
+	if (FOUNDATION_UNLIKELY(size > MEDIUM_SIZE_LIMIT)) {
 		size += CHUNK_HEADER_SIZE;
 		size_t num_pages = size / PAGE_SIZE;
 		if (size % PAGE_SIZE)
@@ -807,12 +830,16 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 		chunk->size_class = 0xFF;
 		size_t* chunk_page_count = (size_t*)((void*)chunk);
 		*chunk_page_count = num_pages;
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+		atomic_add64(&_memory_statistics.allocated_total, PAGE_SIZE * (int64_t)num_pages);
+		atomic_add64(&_memory_statistics.allocated_current, PAGE_SIZE * (int64_t)num_pages);
+#endif
 		return pointer_offset(chunk, CHUNK_HEADER_SIZE);
 	}
 
 	//TODO: Add likely/unlikely branch hints in foundation lib
 	heap_t* heap = get_thread_heap();
-	if (!heap) {
+	if (FOUNDATION_UNLIKELY(!heap)) {
 		heap = _memory_allocate_heap();
 		if (!heap)
 			return 0;
@@ -830,18 +857,26 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 
 static void
 _memory_deallocate(void* p) {
-	if (!p)
+	if (FOUNDATION_UNLIKELY(!p))
 		return;
 
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	atomic_decr64(&_memory_statistics.allocations_current);
+#endif
+
 	chunk_t* chunk = (void*)((uintptr_t)p & (uintptr_t)PAGE_MASK);
-	if (chunk->size_class == 0xFF) {
+	if (FOUNDATION_UNLIKELY(chunk->size_class == 0xFF)) {
 		size_t* chunk_page_count = (size_t*)((void*)chunk);
-		_memory_deallocate_raw(0, chunk, *chunk_page_count);
+		size_t page_count = *chunk_page_count;
+		_memory_deallocate_raw(0, chunk, page_count);
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+		atomic_add64(&_memory_statistics.allocated_current, PAGE_SIZE * -(int64_t)page_count);
+#endif
 		return;
 	}
 
 	heap_t* heap = get_thread_heap();
-	if (heap && (chunk->heap_id == heap->id)) {		
+	if (FOUNDATION_LIKELY(heap && (chunk->heap_id == heap->id))) {
 		_memory_deallocate_from_heap(heap, chunk, p);
 	}
 	else {
@@ -859,7 +894,7 @@ _memory_reallocate(void* p, size_t size, unsigned int align, size_t oldsize) {
 	FOUNDATION_UNUSED(align);
 
 	chunk_t* chunk = 0;
-	if (p) {
+	if (FOUNDATION_LIKELY(p)) {
 		chunk = (void*)((uintptr_t)p & (uintptr_t)PAGE_MASK);
 		if (chunk->size_class != 0xFF) {
 			//All heaps have the same size_class setup, safe to use this even if chunk
@@ -939,6 +974,7 @@ memory_statistics_detail_t
 memory_statistics_detailed(void) {
 	memory_statistics_detail_t memory_statistics;
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	atomic_thread_fence_acquire();
 	memcpy(&memory_statistics, &_memory_statistics, sizeof(memory_statistics));
 #else
 	memset(&memory_statistics, 0, sizeof(memory_statistics));
