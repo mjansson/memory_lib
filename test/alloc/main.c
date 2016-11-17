@@ -84,8 +84,6 @@ DECLARE_TEST(alloc, alloc) {
 			memcpy(addr[ipass], data, 500);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
-				if (addr[icheck] == addr[ipass])
-					int foo = 0;
 				EXPECT_NE(addr[icheck], addr[ipass]);
 				if (addr[icheck] < addr[ipass])
 					EXPECT_LE(pointer_offset(addr[icheck], 500), addr[ipass]);
@@ -340,8 +338,6 @@ crossallocator_thread(void* argp) {
 	memory_system_t memsys = arg.memory_system;
 	unsigned int iloop = 0;
 	unsigned int ipass = 0;
-	unsigned int icheck = 0;
-	unsigned int id = 0;
 	unsigned int cursize;
 	unsigned int iwait = 0;
 

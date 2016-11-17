@@ -97,7 +97,7 @@ FOUNDATION_STATIC_ASSERT(sizeof(span_t) == SPAN_HEADER_SIZE, "span size mismatch
 
 struct heap_t {
 	//! Heap ID
-	uint32_t    id;
+	int32_t     id;
 	//! Next heap
 	heap_t*     next_heap;
 	//! List of spans with free blocks for each size class
@@ -143,10 +143,10 @@ static atomic64_t _memory_addr;
 #endif
 
 //! Global span cache
-atomicptr_t _memory_span_cache[SPAN_CLASS_COUNT+1];
+static atomicptr_t _memory_span_cache[SPAN_CLASS_COUNT+1];
 
 //! Current thread heap
-FOUNDATION_DECLARE_THREAD_LOCAL(heap_t*, heap, 0);
+FOUNDATION_DECLARE_THREAD_LOCAL(heap_t*, heap, 0)
 
 //! All heaps
 static atomicptr_t _memory_heaps[HEAP_ARRAY_SIZE];
@@ -160,7 +160,7 @@ static memory_statistics_atomic_t _memory_statistics;
 #endif
 
 static heap_t*
-_memory_heap_lookup(uint32_t id) {
+_memory_heap_lookup(int32_t id) {
 	uint32_t list_idx = id % HEAP_ARRAY_SIZE;
 	heap_t* heap = atomic_loadptr(&_memory_heaps[list_idx]);
 	while (heap && (heap->id != id))
@@ -182,16 +182,16 @@ _memory_map(size_t page_count) {
 	                                 MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
 	*/
 #else
-	size_t incr = total_size / SPAN_ADDRESS_GRANULARITY;
+	intptr_t incr = (intptr_t)total_size / (intptr_t)SPAN_ADDRESS_GRANULARITY;
 	if (total_size % SPAN_ADDRESS_GRANULARITY)
 		++incr;
 	do {
-		void* base_addr = (void*)(uintptr_t)atomic_exchange_and_add64(&_memory_addr, incr * 0x10000LL);
+		void* base_addr = (void*)(uintptr_t)atomic_exchange_and_add64(&_memory_addr, incr * (intptr_t)SPAN_ADDRESS_GRANULARITY);
 		pages_ptr = mmap(base_addr, total_size, PROT_READ | PROT_WRITE,
 		                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_UNINITIALIZED, -1, 0);
 		if (!((uintptr_t)pages_ptr & ~(uintptr_t)SPAN_MASK)) {
 			if (pages_ptr != base_addr) {
-				atomic_store64(&_memory_addr, (int64_t)((uintptr_t)pages_ptr) + (incr * 0x10000LL));
+				atomic_store64(&_memory_addr, (int64_t)((uintptr_t)pages_ptr) + (incr * (intptr_t)SPAN_ADDRESS_GRANULARITY));
 				atomic_thread_fence_release();
 			}
 			break;
@@ -229,8 +229,7 @@ _memory_unmap(void* ptr, size_t page_count) {
 }
 
 static void
-_memory_global_cache_insert(span_t* first_span, span_t* last_span, size_t page_count,
-                            size_t span_count) {
+_memory_global_cache_insert(span_t* first_span, size_t page_count, size_t span_count) {
 	while (true) {
 		void* global_span_ptr = atomic_load_ptr(&_memory_span_cache[page_count]);
 		if (global_span_ptr != SPAN_LIST_LOCK_TOKEN) {
@@ -375,7 +374,7 @@ _memory_allocate_from_heap(heap_t* heap, size_t size) {
 	atomic_thread_fence_release();
 
 	span->size_class = (uint8_t)class_idx;
-	span->free_count = size_class->block_count - 1;
+	span->free_count = (uint8_t)(size_class->block_count - 1);
 	span->next_span = 0;
 
 	//If we only have one block we will grab it, otherwise
@@ -413,7 +412,7 @@ _memory_allocate_heap(void) {
 	memset(heap, 0, sizeof(heap_t));
 
 	do {
-		heap->id = (uint32_t)atomic_incr32(&_memory_heap_id);
+		heap->id = atomic_incr32(&_memory_heap_id);
 		if (_memory_heap_lookup(heap->id))
 			heap->id = 0;
 	}
@@ -498,10 +497,8 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 			uint32_t span_count = (THREAD_SPAN_CACHE_LIMIT/2);
 			span_t* first_span = heap->span_cache[size_class->page_count];
 			span_t* next_span = first_span;
-			span_t* last_span;
 
 			for (uint32_t ispan = 0; ispan < span_count; ++ispan) {
-				last_span = next_span;
 				MEMORY_ASSERT(next_span->next_span);
 				next_span = pointer_offset_span(next_span, next_span->next_span);
 			}
@@ -509,7 +506,7 @@ _memory_deallocate_to_heap(heap_t* heap, span_t* span, void* p) {
 			next_span->list_size = first_span->list_size - (uint8_t)span_count;
 			heap->span_cache[size_class->page_count] = next_span;
 
-			_memory_global_cache_insert(first_span, last_span, size_class->page_count, span_count);
+			_memory_global_cache_insert(first_span, size_class->page_count, span_count);
 		}
 	}
 	else if (span->free_count == 1) {
@@ -534,7 +531,7 @@ _memory_deallocate_deferred(heap_t* heap) {
 }
 
 static void
-_memory_deallocate_defer(uint32_t heap_id, span_t* span, void* p) {
+_memory_deallocate_defer(int32_t heap_id, void* p) {
 	//Delegate to heap
 	heap_t* heap = _memory_heap_lookup(heap_id);
 	MEMORY_ASSERT(heap);
@@ -565,7 +562,7 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 		span_t* span = _memory_map(num_pages);
 		span->size_class = 0xFF;
 		//Store page count in next_span
-		span->next_span = (uint32_t)num_pages;
+		span->next_span = (int32_t)num_pages;
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 		atomic_add64(&_memory_statistics.allocated_total, (int64_t)PAGE_SIZE * (int64_t)num_pages);
 		atomic_add64(&_memory_statistics.allocated_current, (int64_t)PAGE_SIZE * (int64_t)num_pages);
@@ -598,7 +595,7 @@ _memory_deallocate(void* p) {
 	span_t* span = (void*)((uintptr_t)p & (uintptr_t)SPAN_MASK);
 	if (FOUNDATION_UNLIKELY(span->size_class == 0xFF)) {
 		//Page count is stored in next_span
-		size_t num_pages = span->next_span;
+		size_t num_pages = (size_t)span->next_span;
 		_memory_unmap(span, num_pages);
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 		atomic_decr64(&_memory_statistics.allocations_current);
@@ -608,13 +605,13 @@ _memory_deallocate(void* p) {
 	}
 
 	heap_t* heap = get_thread_heap();
-	uint32_t heap_id = atomic_load32(&span->heap_id);
+	int32_t heap_id = atomic_load32(&span->heap_id);
 
 	if (FOUNDATION_LIKELY(heap && (heap_id == heap->id))) {
 		_memory_deallocate_to_heap(heap, span, p);
 	}
 	else {
-		_memory_deallocate_defer(heap_id, span, p);
+		_memory_deallocate_defer(heap_id, p);
 	}
 }
 
@@ -636,7 +633,7 @@ _memory_reallocate(void* p, size_t size, unsigned int align, size_t oldsize) {
 			if (total_size % PAGE_SIZE)
 				++num_pages;
 			//Page count is stored in next_span
-			size_t current_pages = span->next_span;
+			size_t current_pages = (size_t)span->next_span;
 			if ((current_pages >= num_pages) && (num_pages >= (current_pages / 2)))
 				return p; //Still fits and less than half of memory would be freed
 		}
@@ -804,16 +801,14 @@ _memory_thread_finalize(void) {
 
 				span_t* first_span = heap->span_cache[iclass];
 				span_t* next_span = first_span;
-				span_t* last_span;
 
 				for (uint32_t ispan = 0; ispan < release_count; ++ispan) {
-					last_span = next_span;
 					next_span = pointer_offset_span(next_span, next_span->next_span);
 				}
 
 				heap->span_cache[iclass] = next_span;
 
-				_memory_global_cache_insert(first_span, last_span, iclass, release_count);
+				_memory_global_cache_insert(first_span, iclass, release_count);
 
 				span_count -= release_count;
 			}
