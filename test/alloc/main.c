@@ -84,12 +84,13 @@ DECLARE_TEST(alloc, alloc) {
 			memcpy(addr[ipass], data, 500);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
+				if (addr[icheck] == addr[ipass])
+					int foo = 0;
 				EXPECT_NE(addr[icheck], addr[ipass]);
 				if (addr[icheck] < addr[ipass])
-					EXPECT_LT(pointer_offset(addr[icheck], 500),
-					          addr[ipass]);     //LT since we have some bookkeeping overhead in memory manager between blocks
+					EXPECT_LE(pointer_offset(addr[icheck], 500), addr[ipass]);
 				else if (addr[icheck] > addr[ipass])
-					EXPECT_LT(pointer_offset(addr[ipass], 500), addr[icheck]);
+					EXPECT_LE(pointer_offset(addr[ipass], 500), addr[icheck]);
 			}
 		}
 
@@ -164,6 +165,7 @@ typedef struct _allocator_thread_arg {
 	unsigned int        passes; //max 4096
 	unsigned int        datasize[32];
 	unsigned int        num_datasize; //max 32
+	void**              pointers;
 } allocator_thread_arg_t;
 
 static void* 
@@ -252,7 +254,7 @@ DECLARE_TEST(alloc, threaded) {
 
 	//Warm-up
 	thread_arg.memory_system = memsys;
-	thread_arg.loops = 100000;
+	thread_arg.loops = 10000;
 	thread_arg.passes = 1024;
 	thread_arg.datasize[0] = 19;
 	thread_arg.datasize[1] = 249;
@@ -332,10 +334,132 @@ DECLARE_TEST(alloc, threaded) {
 	return 0;
 }
 
+static void* 
+crossallocator_thread(void* argp) {
+	allocator_thread_arg_t arg = *(allocator_thread_arg_t*)argp;
+	memory_system_t memsys = arg.memory_system;
+	unsigned int iloop = 0;
+	unsigned int ipass = 0;
+	unsigned int icheck = 0;
+	unsigned int id = 0;
+	unsigned int cursize;
+	unsigned int iwait = 0;
+
+	iwait = random32_range(0, 10);
+	thread_sleep(iwait);
+
+	for (iloop = 0; iloop < arg.loops; ++iloop) {
+		for (ipass = 0; ipass < arg.passes; ++ipass) {
+			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize ] + (iloop % 1024);
+
+			void* addr = memsys.allocate(0, cursize, 0, MEMORY_PERSISTENT);
+			EXPECT_NE(addr, 0);
+
+			arg.pointers[iloop * arg.passes + ipass] = addr;
+		}
+	}
+
+	return 0;
+}
+
+DECLARE_TEST(alloc, crossthread) {
+	allocator_thread_arg_t thread_arg;
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	volatile memory_statistics_detail_t stat;
+#endif
+
+	memory_system_t memsys = memory_system();
+	memsys.initialize();
+
+	thread_arg.memory_system = memsys;
+	thread_arg.loops = 100;
+	thread_arg.passes = 1024;
+	thread_arg.pointers = memory_allocate(HASH_TEST, sizeof(void*) * thread_arg.loops * thread_arg.passes, 0, MEMORY_PERSISTENT);
+	thread_arg.datasize[0] = 19;
+	thread_arg.datasize[1] = 249;
+	thread_arg.datasize[2] = 797;
+	thread_arg.datasize[3] = 3;
+	thread_arg.datasize[4] = 79;
+	thread_arg.datasize[5] = 34;
+	thread_arg.datasize[6] = 389;
+	thread_arg.num_datasize = 7;
+
+	EXPECT_EQ(crossallocator_thread(&thread_arg), 0);
+
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	stat = memory_statistics_detailed();
+	log_memory_info(STRING_CONST("STATISTICS AFTER THREAD ALLOCATION"));
+	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+#endif
+
+	//Simulate thread exit
+	memsys.thread_finalize();
+
+	//Off-thread deallocation
+	for (size_t iptr = 0; iptr < thread_arg.loops * thread_arg.passes; ++iptr)
+		memsys.deallocate(thread_arg.pointers[iptr]);
+
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	stat = memory_statistics_detailed();
+	log_memory_info(STRING_CONST("STATISTICS AFTER OFFTHREAD DEALLOCATION"));
+	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+#endif
+
+	memsys.thread_finalize();
+
+	//Trigger processing of off-thread deallocations
+	memsys.deallocate(memsys.allocate(0, 19875, 0, 0));
+
+	memsys.thread_finalize();
+
+#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
+	stat = memory_statistics_detailed();
+	log_memory_info(STRING_CONST("STATISTICS AFTER THREAD DEALLOCATION TRIGGER"));
+	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_memory_info(STRING_CONST(""));
+	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+#endif
+
+	memsys.finalize();
+
+	memory_deallocate(thread_arg.pointers);
+
+	return 0;
+}
+
 static void 
 test_alloc_declare(void) {
 	ADD_TEST(alloc, alloc);
 	ADD_TEST(alloc, threaded);
+	ADD_TEST(alloc, crossthread);
 }
 
 static test_suite_t test_alloc_suite = {

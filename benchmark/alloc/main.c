@@ -96,10 +96,12 @@ _run_small_allocation_loop(memory_system_t* memsys, void** ptr, size_t* size) {
 	memset(&res, 0, sizeof(res));
 	for (iloop = 0; iloop < 512; ++iloop) {
 		time_start = time_current();
+		atomic_thread_fence_sequentially_consistent();
 		for (ipass = 0; ipass < 8192; ++ipass) {
 			ptr[ipass] = memsys->allocate(0, (size_t)(ipass + iloop), 0, MEMORY_PERSISTENT);
 			++res.ops;
 		}
+		atomic_thread_fence_sequentially_consistent();
 		time_end = time_current();
 		res.elapsed += time_diff(time_start, time_end);
 		for (ipass = 0; ipass < 8192; ++ipass) {
@@ -118,10 +120,12 @@ _run_small_random_allocation_loop(memory_system_t* memsys, void** ptr, size_t* s
 	memset(&res, 0, sizeof(res));
 	for (iloop = 0; iloop < 512; ++iloop) {
 		time_start = time_current();
+		atomic_thread_fence_sequentially_consistent();
 		for (ipass = 0; ipass < 8192; ++ipass) {
 			ptr[ipass] = memsys->allocate(0, size[ ipass ], 0, MEMORY_PERSISTENT);
 			++res.ops;
 		}
+		atomic_thread_fence_sequentially_consistent();
 		time_end = time_current();
 		res.elapsed += time_diff(time_start, time_end);
 		for (ipass = 0; ipass < 8192; ++ipass) {
@@ -143,10 +147,12 @@ _run_small_random_reallocation_loop(memory_system_t* memsys, void** ptr, size_t*
 			ptr[ipass] = memsys->allocate(0, size[ipass], 0, MEMORY_PERSISTENT);
 		}
 		time_start = time_current();
+		atomic_thread_fence_sequentially_consistent();
 		for (ipass = 0; ipass < 8192; ++ipass) {
 			ptr[ipass] = memsys->reallocate(ptr[ipass], size[(ipass * iloop) % 8192 ], 0, size[ ipass ]);
 			res.ops++;
 		}
+		atomic_thread_fence_sequentially_consistent();
 		time_end = time_current();
 		res.elapsed += time_diff(time_start, time_end);
 		for (ipass = 0; ipass < 8192; ++ipass) {
@@ -168,10 +174,12 @@ _run_small_random_deallocation_loop(memory_system_t* memsys, void** ptr, size_t*
 			ptr[ipass] = memsys->allocate(0, size[ ipass ], 0, MEMORY_PERSISTENT);
 		}
 		time_start = time_current();
+		atomic_thread_fence_sequentially_consistent();
 		for (ipass = 0; ipass < 8192; ++ipass) {
 			memsys->deallocate(ptr[ipass]);
 			res.ops++;
 		}
+		atomic_thread_fence_sequentially_consistent();
 		time_end = time_current();
 		res.elapsed += time_diff(time_start, time_end);
 	}
@@ -187,6 +195,7 @@ _run_small_random_mixed_loop(memory_system_t* memsys, void** ptr, size_t* size) 
 	memset(&res, 0, sizeof(res));
 	for (iloop = 0; iloop < 512; ++iloop) {
 		time_start = time_current();
+		atomic_thread_fence_sequentially_consistent();
 		for (ipass = 0; ipass < 8192; ++ipass) {
 			ptr[ipass] = memsys->allocate(0, size[ ipass ], 0, MEMORY_PERSISTENT);
 			++res.ops;
@@ -204,6 +213,7 @@ _run_small_random_mixed_loop(memory_system_t* memsys, void** ptr, size_t* size) 
 			memsys->deallocate(ptr[ipass]);
 			++res.ops;
 		}
+		atomic_thread_fence_sequentially_consistent();
 		time_end = time_current();
 		res.elapsed += time_diff(time_start, time_end);
 	}
@@ -285,7 +295,7 @@ main_initialize(void) {
 	//log_set_suppress(HASH_BENCHMARK, ERRORLEVEL_DEBUG);
 
 	_memory_system_to_test = memory_system();
-	//_memory_system_to_test = memory_system_libc_malloc();
+	//_memory_system_to_test = memory_system_malloc();
 	//_memory_system_to_test = memory_system_ptmalloc3();
 	//_memory_system_to_test = memory_system_nedmalloc();
 	//_memory_system_to_test = memory_system_tcmalloc();
