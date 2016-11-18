@@ -17,7 +17,6 @@
 #include <foundation/foundation.h>
 
 #include <memory/memory.h>
-#include <memory/log.h>
 
 static memory_system_t _memory_system_to_test;
 static size_t _num_threads_to_test;

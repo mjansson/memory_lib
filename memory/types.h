@@ -62,4 +62,8 @@ struct memory_statistics_detail_t {
 	uint64_t allocated_total_virtual;
 	/*! Number of allocated bytes of OS virtual memory pages, current */
 	uint64_t allocated_current_virtual;
+	/*! Number of hits in thread cache for allocation */
+	uint64_t thread_cache_hits;
+	/*! Number of misses in thread cache for allocation */
+	uint64_t thread_cache_misses;
 };

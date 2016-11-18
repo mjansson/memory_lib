@@ -18,7 +18,6 @@
 #include <test/test.h>
 
 #include <memory/memory.h>
-#include <memory/log.h>
 
 #include <stdio.h>
 
@@ -111,9 +110,9 @@ DECLARE_TEST(alloc, alloc) {
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				EXPECT_NE(addr[icheck], addr[ipass]);
 				/*if( addr[icheck] < addr[ipass] )
-					EXPECT_LT( pointer_offset( addr[icheck], cursize ), addr[ipass] ); //LT since we have some bookkeeping overhead in memory manager between blocks
+					EXPECT_LE( pointer_offset( addr[icheck], cursize ), addr[ipass] );
 				else if( addr[icheck] > addr[ipass] )
-				EXPECT_LT( pointer_offset( addr[ipass], cursize ), addr[icheck] );*/
+					EXPECT_LE( pointer_offset( addr[ipass], cursize ), addr[icheck] );*/
 			}
 		}
 
@@ -136,10 +135,9 @@ DECLARE_TEST(alloc, alloc) {
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				EXPECT_NE(addr[icheck], addr[ipass]);
 				if (addr[icheck] < addr[ipass])
-					EXPECT_LT(pointer_offset(addr[icheck], 500),
-					          addr[ipass]);     //LT since we have some bookkeeping overhead in memory manager between blocks
+					EXPECT_LE(pointer_offset(addr[icheck], 500), addr[ipass]);     
 				else if (addr[icheck] > addr[ipass])
-					EXPECT_LT(pointer_offset(addr[ipass], 500), addr[icheck]);
+					EXPECT_LE(pointer_offset(addr[ipass], 500), addr[icheck]);
 			}
 		}
 
@@ -187,7 +185,7 @@ allocator_thread(void* argp) {
 
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
-			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize ] + (iloop % 1024);
+			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + (iloop % 1024);
 
 			addr[ipass] = memsys.allocate(0, cursize, 0, MEMORY_PERSISTENT);
 			EXPECT_NE(addr[ipass], 0);
@@ -236,18 +234,21 @@ DECLARE_TEST(alloc, threaded) {
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 	stat = memory_statistics_detailed();
-	log_memory_info(STRING_CONST("STATISTICS AFTER INITIALIZE"));
-	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER INITIALIZE"));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
 #endif
 
 	//Warm-up
@@ -293,18 +294,21 @@ DECLARE_TEST(alloc, threaded) {
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 	stat = memory_statistics_detailed();
-	log_memory_info(STRING_CONST("STATISTICS AFTER TEST"));
-	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER TEST"));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
 #endif
 
 	memsys.thread_finalize();
@@ -312,18 +316,21 @@ DECLARE_TEST(alloc, threaded) {
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 	stat = memory_statistics_detailed();
-	log_memory_info(STRING_CONST("STATISTICS AFTER SHUTDOWN"));
-	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER SHUTDOWN"));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
 #endif
 
 	for (i = 0; i < num_alloc_threads; ++i)
@@ -384,18 +391,21 @@ DECLARE_TEST(alloc, crossthread) {
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 	stat = memory_statistics_detailed();
-	log_memory_info(STRING_CONST("STATISTICS AFTER THREAD ALLOCATION"));
-	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER THREAD ALLOCATION"));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
 #endif
 
 	//Simulate thread exit
@@ -407,18 +417,21 @@ DECLARE_TEST(alloc, crossthread) {
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 	stat = memory_statistics_detailed();
-	log_memory_info(STRING_CONST("STATISTICS AFTER OFFTHREAD DEALLOCATION"));
-	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER OFFTHREAD DEALLOCATION"));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
 #endif
 
 	memsys.thread_finalize();
@@ -430,18 +443,21 @@ DECLARE_TEST(alloc, crossthread) {
 
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 	stat = memory_statistics_detailed();
-	log_memory_info(STRING_CONST("STATISTICS AFTER THREAD DEALLOCATION TRIGGER"));
-	log_memory_infof(STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_memory_infof(STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_memory_infof(STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_memory_infof(STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_memory_info(STRING_CONST(""));
-	log_memory_infof(STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_memory_infof(STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER THREAD DEALLOCATION TRIGGER"));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
+	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
+	log_info(HASH_MEMORY, STRING_CONST(""));
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
+	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
 #endif
 
 	memsys.finalize();

@@ -24,20 +24,11 @@
 
 // Configurable choices
 
-#ifndef BUILD_ENABLE_MEMORY_LOG
-#define BUILD_ENABLE_MEMORY_LOG                  0 //BUILD_ENABLE_LOG
-#endif
-
-#ifndef BUILD_ENABLE_MEMORY_DEBUG_LOG
-#define BUILD_ENABLE_MEMORY_DEBUG_LOG            0 //BUILD_ENABLE_DEBUG_LOG
-#endif
-
-#ifndef BUILD_ENABLE_MEMORY_SPAM_LOG
-#define BUILD_ENABLE_MEMORY_SPAM_LOG             0
-#endif
-
 #ifndef BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 #define BUILD_ENABLE_DETAILED_MEMORY_STATISTICS  0
 #endif
 
-// Allocation sizes
+#ifndef BUILD_USE_FULL_ADDRESS_RANGE
+#define BUILD_USE_FULL_ADDRESS_RANGE 1
+#endif
+
