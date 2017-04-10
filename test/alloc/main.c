@@ -67,10 +67,12 @@ DECLARE_TEST(alloc, alloc) {
 	memory_system_t memsys = memory_system();
 
 	memsys.initialize();
+	memsys.thread_initialize();
 	memsys.thread_finalize();
 	memsys.finalize();
 
 	memsys.initialize();
+	memsys.thread_initialize();
 
 	for (id = 0; id < 20000; ++id)
 		data[id] = (char)(id % 139 + id % 17);
@@ -177,6 +179,8 @@ allocator_thread(void* argp) {
 	unsigned int cursize;
 	unsigned int iwait = 0;
 
+	memsys.thread_initialize();
+
 	for (id = 0; id < 8192; ++id)
 		data[id] = (char)id;
 
@@ -185,26 +189,31 @@ allocator_thread(void* argp) {
 
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
-			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + (iloop % 1024);
+			cursize = 4 + arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + (iloop % 1024);
 
-			addr[ipass] = memsys.allocate(0, cursize, 0, MEMORY_PERSISTENT);
+			addr[ipass] = memsys.allocate(0, 4 + cursize, 0, MEMORY_PERSISTENT);
 			EXPECT_NE(addr[ipass], 0);
 
-			memcpy(addr[ipass], data, cursize);
+			*(uint32_t*)addr[ipass] = (uint32_t)cursize;
+			memcpy(pointer_offset(addr[ipass], 4), data, cursize);
 
 			for (icheck = 0; icheck < ipass; ++icheck) {
 				EXPECT_NE(addr[icheck], addr[ipass]);
-				if (addr[icheck] < addr[ipass])
-					EXPECT_LE(pointer_offset(addr[icheck], cursize), addr[ipass]);
-				else if (addr[icheck] > addr[ipass])
-					EXPECT_LE(pointer_offset(addr[ipass], cursize), addr[icheck]);
+				if (addr[icheck] < addr[ipass]) {
+					if (pointer_offset(addr[icheck], *(uint32_t*)addr[icheck]) > addr[ipass])
+						EXPECT_LE(pointer_offset(addr[icheck], *(uint32_t*)addr[icheck]), addr[ipass]);
+				}
+				else if (addr[icheck] > addr[ipass]) {
+					if (pointer_offset(addr[ipass], *(uint32_t*)addr[ipass]) > addr[ipass])					
+						EXPECT_LE(pointer_offset(addr[ipass], *(uint32_t*)addr[ipass]), addr[icheck]);
+				}
 			}
 		}
 
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
-			cursize = arg.datasize[(iloop + ipass + iwait) % arg.num_datasize ] + (iloop % 1024);
+			cursize = *(uint32_t*)addr[ipass];
 
-			EXPECT_EQ(memcmp(addr[ipass], data, cursize), 0);
+			EXPECT_EQ(memcmp(pointer_offset(addr[ipass], 4), data, cursize), 0);
 			memsys.deallocate(addr[ipass]);
 		}
 	}
@@ -225,6 +234,7 @@ DECLARE_TEST(alloc, threaded) {
 	allocator_thread_arg_t thread_arg;
 	memory_system_t memsys = memory_system();
 	memsys.initialize();
+	memsys.thread_initialize();
 
 	num_alloc_threads = system_hardware_threads() + 1;
 	if (num_alloc_threads < 3)
@@ -348,6 +358,8 @@ crossallocator_thread(void* argp) {
 	unsigned int cursize;
 	unsigned int iwait = 0;
 
+	memsys.thread_initialize();
+
 	iwait = random32_range(0, 10);
 	thread_sleep(iwait);
 
@@ -362,10 +374,13 @@ crossallocator_thread(void* argp) {
 		}
 	}
 
+	memsys.thread_finalize();
+
 	return 0;
 }
 
 DECLARE_TEST(alloc, crossthread) {
+	thread_t thread;
 	allocator_thread_arg_t thread_arg;
 #if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
 	volatile memory_statistics_detail_t stat;
@@ -373,6 +388,7 @@ DECLARE_TEST(alloc, crossthread) {
 
 	memory_system_t memsys = memory_system();
 	memsys.initialize();
+	memsys.thread_initialize();
 
 	thread_arg.memory_system = memsys;
 	thread_arg.loops = 100;
@@ -387,82 +403,25 @@ DECLARE_TEST(alloc, crossthread) {
 	thread_arg.datasize[6] = 389;
 	thread_arg.num_datasize = 7;
 
-	EXPECT_EQ(crossallocator_thread(&thread_arg), 0);
+	thread_initialize(&thread, crossallocator_thread, &thread_arg, STRING_CONST("crossallocator"), THREAD_PRIORITY_NORMAL, 0);
+	thread_start(&thread);
 
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	stat = memory_statistics_detailed();
-	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER THREAD ALLOCATION"));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
-	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
-#endif
+	test_wait_for_threads_startup(&thread, 1);
+	test_wait_for_threads_finish(&thread, 1);
 
-	//Simulate thread exit
-	memsys.thread_finalize();
+	EXPECT_EQ(thread_join(&thread), 0);
+	thread_finalize(&thread);
 
 	//Off-thread deallocation
 	for (size_t iptr = 0; iptr < thread_arg.loops * thread_arg.passes; ++iptr)
 		memsys.deallocate(thread_arg.pointers[iptr]);
 
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	stat = memory_statistics_detailed();
-	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER OFFTHREAD DEALLOCATION"));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
-	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
-#endif
+	memory_deallocate(thread_arg.pointers);
 
+	//Simulate thread exit
 	memsys.thread_finalize();
-
-	//Trigger processing of off-thread deallocations
-	memsys.deallocate(memsys.allocate(0, 19875, 0, 0));
-
-	memsys.thread_finalize();
-
-#if BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-	stat = memory_statistics_detailed();
-	log_info(HASH_MEMORY, STRING_CONST("STATISTICS AFTER THREAD DEALLOCATION TRIGGER"));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual current size: %" PRIu64), stat.allocated_current_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Current size:         %" PRIu64), stat.allocated_current);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual total size:   %" PRIu64), stat.allocated_total_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Total size:           %" PRIu64), stat.allocated_total);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual count:        %" PRIu64), stat.allocations_current_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Count:                %" PRIu64), stat.allocations_current);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Virtual total count:  %" PRIu64), stat.allocations_total_virtual);
-	log_infof(HASH_MEMORY, STRING_CONST("Total count:          %" PRIu64), stat.allocations_total);
-	log_info(HASH_MEMORY, STRING_CONST(""));
-	log_infof(HASH_MEMORY, STRING_CONST("Thread cache hits:    %" PRIu64), stat.thread_cache_hits);
-	log_infof(HASH_MEMORY, STRING_CONST("Thread cache misses:  %" PRIu64), stat.thread_cache_misses);
-#endif
 
 	memsys.finalize();
-
-	memory_deallocate(thread_arg.pointers);
 
 	return 0;
 }

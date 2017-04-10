@@ -17,7 +17,7 @@ writer = generator.writer
 toolchain = generator.toolchain
 extrasources = []
 
-memory_sources = ['memory.c', 'version.c']
+memory_sources = ['memory.c', 'rpmalloc.c', 'version.c']
 
 memory_lib = generator.lib(module = 'memory', sources = memory_sources + extrasources)
 
@@ -65,6 +65,3 @@ else:
   generator.bin(module = 'all', sources = sources, binname = 'test-all', basepath = 'test', implicit_deps = [memory_lib], libs = ['memory', 'foundation'], includepaths = includepaths)
   for test in test_cases:
     generator.bin(module = test, sources = sources, binname = 'test-' + test, basepath = 'test', implicit_deps = [memory_lib], libs = ['test', 'memory', 'foundation'], includepaths = includepaths)
-
-  sources = ['main.c']
-  generator.bin(module = 'alloc', sources = sources, binname = 'benchmark-alloc', basepath = 'benchmark', implicit_deps = [memory_lib], libs = ['memory', 'foundation'], includepaths = includepaths)

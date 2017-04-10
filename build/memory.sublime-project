@@ -1,56 +1,42 @@
 {
-	"folders":
-	[
-		{
-			"follow_symlinks": true,
-			"path": "../memory"
-		},
-		{
-			"follow_symlinks": true,
-			"path": "../test"
-		},
-		{
-			"follow_symlinks": true,
-			"path": "../benchmark"
-		},
-		{
-			"follow_symlinks": true,
-			"path": "../tools"
-		},
-		{
-			"follow_symlinks": true,
-			"path": "../doc"
-		}
-	],
 	"build_systems":
 	[
 		{
 			"name": "Ninja",
 			"shell_cmd": "ninja",
-			"working_dir": "${project_path:${folder:${file_path}}}/..",
+			"working_dir": "${project_path:${folder:${file_path}}}/.."
 		}
 	],
-	"use_tab_stops": true,
-	"translate_tabs_to_spaces": false,
-	"trim_trailing_white_space_on_save": true,
+	"folders":
+	[
+		{
+			"path": "/Users/mattias/projects/memory_lib/memory"
+		},
+		{
+			"path": "/Users/mattias/projects/memory_lib/test"
+		}
+	],
 	"settings":
 	{
 		"AStyleFormatter":
 		{
 			"options_default":
 			{
-				"style" : "attach",
-				"pad-oper": false,
-				"pad-header": true,
-				"indent-switches" : false,
-				"indent-cases" : true,
-				"unpad-paren": true,
-				"break-closing-brackets": true,
 				"align-pointer": "type",
+				"break-after-logical": true,
+				"break-closing-brackets": true,
+				"indent-cases": true,
+				"indent-switches": false,
 				"max-code-length": 100,
 				"max-instatement-indent": 60,
-				"break-after-logical": true
+				"pad-header": true,
+				"pad-oper": false,
+				"style": "attach",
+				"unpad-paren": true
 			}
 		}
-	}
+	},
+	"translate_tabs_to_spaces": false,
+	"trim_trailing_white_space_on_save": true,
+	"use_tab_stops": true
 }
