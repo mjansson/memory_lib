@@ -19,13 +19,6 @@
 #include "memory.h"
 #include "rpmalloc.h"
 
-memory_statistics_detail_t
-memory_statistics_detailed(void) {
-	memory_statistics_detail_t memory_statistics;
-	memset(&memory_statistics, 0, sizeof(memory_statistics));
-	return memory_statistics;
-}
-
 static int
 _memory_initialize(void) {
 	return rpmalloc_initialize();

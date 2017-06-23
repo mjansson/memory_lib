@@ -42,28 +42,3 @@
 #  define MEMORY_API extern
 #  endif
 #endif
-
-typedef struct memory_statistics_detail_t memory_statistics_detail_t;
-
-struct memory_statistics_detail_t {
-	/*! Number of allocations in total, running counter */
-	uint64_t allocations_total;
-	/*! Number of allocations, current */
-	uint64_t allocations_current;
-	/*! Number of allocated bytes in total, running counter */
-	uint64_t allocated_total;
-	/*! Number of allocated bytes, current */
-	uint64_t allocated_current;
-	/*! Number of allocations in total of OS virtual memory pages, running counter */
-	uint64_t allocations_total_virtual;
-	/*! Number of allocations of OS virtual memory pages, current */
-	uint64_t allocations_current_virtual;
-	/*! Number of allocated bytes total of OS virtual memory pages, running counter */
-	uint64_t allocated_total_virtual;
-	/*! Number of allocated bytes of OS virtual memory pages, current */
-	uint64_t allocated_current_virtual;
-	/*! Number of hits in thread cache for allocation */
-	uint64_t thread_cache_hits;
-	/*! Number of misses in thread cache for allocation */
-	uint64_t thread_cache_misses;
-};
