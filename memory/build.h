@@ -20,15 +20,3 @@
     Build setup */
 
 #include <foundation/platform.h>
-
-
-// Configurable choices
-
-#ifndef BUILD_ENABLE_DETAILED_MEMORY_STATISTICS
-#define BUILD_ENABLE_DETAILED_MEMORY_STATISTICS  0
-#endif
-
-#ifndef BUILD_USE_FULL_ADDRESS_RANGE
-#define BUILD_USE_FULL_ADDRESS_RANGE 1
-#endif
-

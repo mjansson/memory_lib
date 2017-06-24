@@ -9,7 +9,13 @@
  *
  */
 
+#pragma once
+
 #include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #if defined(__clang__) || defined(__GNUC__)
 # define RPMALLOC_ATTRIBUTE __attribute__((__malloc__))
@@ -72,6 +78,9 @@ rpmalloc_thread_finalize(void);
 extern void
 rpmalloc_thread_collect(void);
 
+extern int
+rpmalloc_is_thread_initialized(void);
+
 extern void
 rpmalloc_thread_statistics(rpmalloc_thread_statistics_t* stats);
 
@@ -104,3 +113,7 @@ rpposix_memalign(void **memptr, size_t alignment, size_t size);
 
 extern size_t
 rpmalloc_usable_size(void* ptr);
+
+#ifdef __cplusplus
+}
+#endif
