@@ -43,6 +43,7 @@ class Toolchain(object):
     self.host = host
     self.target = target
     self.toolchain = toolchain
+    self.subninja = False
 
     #Set default values
     self.build_monolithic = False
@@ -103,7 +104,7 @@ class Toolchain(object):
     #Target functionality
     if target.is_android():
       self.android = android.make_target(self, host, target)
-    if target.is_macosx() or target.is_ios():
+    if target.is_macos() or target.is_ios():
       self.xcode = xcode.make_target(self, host, target)
 
     #Builders
@@ -111,6 +112,9 @@ class Toolchain(object):
 
     #Paths created
     self.paths_created = {}
+
+  def initialize_subninja(self):
+    self.subninja = True
 
   def initialize_project(self, project):
     self.project = project
@@ -132,7 +136,7 @@ class Toolchain(object):
         self.archs = ['x86']
       else:
         self.archs = [localarch]
-    elif self.target.is_macosx():
+    elif self.target.is_macos():
       self.archs = ['x86-64']
     elif self.target.is_ios():
       self.archs = ['arm7', 'arm64']
@@ -255,6 +259,8 @@ class Toolchain(object):
   def mkdir(self, writer, path, implicit = None, order_only = None):
     if path in self.paths_created:
       return self.paths_created[path]
+    if self.subninja:
+      return
     cmd = writer.build(path, 'mkdir', None, implicit = implicit, order_only = order_only)
     self.paths_created[path] = cmd
     return cmd
@@ -330,7 +336,8 @@ class Toolchain(object):
       includepaths = []
     if libpaths is None:
       libpaths = []
-    sourcevariables = {'includepaths': self.depend_includepaths + list(includepaths)}
+    sourcevariables = (variables or {}).copy()
+    sourcevariables.update({'includepaths': self.depend_includepaths + list(includepaths)})
     nodevariables = (variables or {}).copy()
     nodevariables.update({
                      'libs': libs,
@@ -401,7 +408,7 @@ class Toolchain(object):
   def app(self, writer, module, sources, binname, basepath, configs, includepaths, libpaths, implicit_deps, libs, frameworks, variables, resources):
     builtbin = []
     # Filter out platforms that do not have app concept
-    if not (self.target.is_macosx() or self.target.is_ios() or self.target.is_android() or self.target.is_tizen()):
+    if not (self.target.is_macos() or self.target.is_ios() or self.target.is_android() or self.target.is_tizen()):
       return builtbin
     if basepath is None:
       basepath = ''
@@ -411,7 +418,7 @@ class Toolchain(object):
       configs = list(self.configs)
     for config in configs:
       archbins = self.bin(writer, module, sources, binname, basepath, [config], includepaths, libpaths, implicit_deps, libs, frameworks, variables, '$buildpath')
-      if self.target.is_macosx() or self.target.is_ios():
+      if self.target.is_macos() or self.target.is_ios():
         binpath = os.path.join(self.binpath, config, binname + '.app')
         builtbin += self.xcode.app(self, writer, module, archbins, self.binpath, binname, basepath, config, None, resources, True)
       if self.target.is_android():
