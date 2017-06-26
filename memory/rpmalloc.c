@@ -9,6 +9,13 @@
  *
  */
 
+#  ifdef __clang__
+#    pragma clang diagnostic ignored "-Wreserved-id-macro"
+#  endif
+#  ifndef _GNU_SOURCE
+#    define _GNU_SOURCE
+#  endif
+
 #include "rpmalloc.h"
 
 // Build time configurable limits
