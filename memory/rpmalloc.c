@@ -9,12 +9,14 @@
  *
  */
 
+#if defined(__linux__) || defined(__linux)
 #  ifdef __clang__
 #    pragma clang diagnostic ignored "-Wreserved-id-macro"
 #  endif
 #  ifndef _GNU_SOURCE
 #    define _GNU_SOURCE
 #  endif
+#endif
 
 #include "rpmalloc.h"
 
