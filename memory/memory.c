@@ -32,8 +32,10 @@ _memory_finalize(void) {
 static void*
 _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint) {
 	FOUNDATION_UNUSED(context);
-	FOUNDATION_UNUSED(hint);
-	return rpmemalign(align, size);
+	void* block = rpmemalign(align, size);
+	if ((hint & MEMORY_ZERO_INITIALIZED) && block)
+		memset(block, 0, size);
+	return block;
 }
 
 static void*
