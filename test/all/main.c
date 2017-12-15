@@ -17,7 +17,6 @@
 static volatile bool _test_should_start;
 static volatile bool _test_have_focus;
 static volatile bool _test_should_terminate;
-static volatile bool _test_memory_tracker;
 
 static void*
 event_loop(void* arg) {
@@ -69,7 +68,7 @@ event_loop(void* arg) {
 	return 0;
 }
 
-#if FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID
+#if ( FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID ) && BUILD_ENABLE_LOG
 
 #if FOUNDATION_PLATFORM_ANDROID
 #include <foundation/android.h>
@@ -80,7 +79,13 @@ event_loop(void* arg) {
 #include <test/test.h>
 
 static void
-test_log_view_append(const char* msg, size_t length) {
+test_log_handler(hash_t context, error_level_t severity, const char* msg, size_t length) {
+	FOUNDATION_UNUSED(context);
+	FOUNDATION_UNUSED(severity);
+
+	if (_test_should_terminate)
+		return;
+
 #if FOUNDATION_PLATFORM_IOS
 	test_text_view_append(delegate_uiwindow(), 1 , msg, length);
 #elif FOUNDATION_PLATFORM_ANDROID
@@ -101,21 +106,6 @@ test_log_view_append(const char* msg, size_t length) {
 #endif
 }
 
-#  if BUILD_ENABLE_LOG
-
-static void
-test_log_handler(hash_t context, error_level_t severity, const char* msg, size_t length) {
-	FOUNDATION_UNUSED(context);
-	FOUNDATION_UNUSED(severity);
-	if (_test_should_terminate)
-		return;
-	if (!log_stdout())
-		return;
-	test_log_view_append(msg, length);
-}
-
-#  endif
-
 #endif
 
 #if !BUILD_MONOLITHIC
@@ -124,11 +114,7 @@ void
 test_exception_handler(const char* dump_file, size_t length) {
 	FOUNDATION_UNUSED(dump_file);
 	FOUNDATION_UNUSED(length);
-	log_error(HASH_TEST, ERROR_EXCEPTION, STRING_CONST("Test raised exception"));
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && !BUILD_ENABLE_LOG
-	test_log_view_append(STRING_CONST("Test raised exception\n"));
-	thread_sleep(5000);
-#endif
+	log_error(HASH_TEST, ERROR_EXCEPTION, STRING_CONST("Test crashed"));
 	process_exit(-1);
 }
 
@@ -143,42 +129,20 @@ int
 main_initialize(void) {
 	foundation_config_t config;
 	application_t application;
-	int ret;
-	size_t iarg, asize;
-	const string_const_t* cmdline = environment_command_line();
-
-	_test_memory_tracker = true;
-	for (iarg = 0, asize = array_size(cmdline); iarg < asize; ++iarg) {
-		if (string_equal(STRING_ARGS(cmdline[iarg]), STRING_CONST("--no-memory-tracker")))
-			_test_memory_tracker = false;
-	}
-
-	if (_test_memory_tracker)
-		memory_set_tracker(memory_tracker_local());
 
 	memset(&config, 0, sizeof(config));
-#if BUILD_MONOLITHIC
-	//For fs monitor test
-	config.fs_monitor_max = 1;
-	//For temporary allocator test, 256KiB
-	config.temporary_memory = 256 * 1024;
-	//For testing static hash store
-	config.hash_store_size = 32 * 1024;
-	//Test preallocation of random state buffers
-	config.random_state_prealloc = 4;
-#endif
 
 	memset(&application, 0, sizeof(application));
 	application.name = string_const(STRING_CONST("Memory library test suite"));
 	application.short_name = string_const(STRING_CONST("test_all"));
 	application.company = string_const(STRING_CONST("Rampant Pixels"));
-	application.version = memory_module_version();
+	application.version = foundation_version();
 	application.flags = APPLICATION_UTILITY;
 	application.exception_handler = test_exception_handler;
 
 	log_set_suppress(0, ERRORLEVEL_INFO);
 
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && BUILD_ENABLE_LOG
+#if ( FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID ) && BUILD_ENABLE_LOG
 	log_set_handler(test_log_handler);
 #endif
 
@@ -188,12 +152,14 @@ main_initialize(void) {
 
 #endif
 
-	ret = foundation_initialize(memory_system(), application, config);
+	if (foundation_initialize(memory_system_malloc(), application, config) < 0)
+		return -1;
 
 #if BUILD_MONOLITHIC
 	test_set_suitable_working_directory();
 #endif
-	return ret;
+
+	return 0;
 }
 
 #if FOUNDATION_PLATFORM_ANDROID
@@ -201,43 +167,19 @@ main_initialize(void) {
 #endif
 
 #if BUILD_MONOLITHIC
-extern int test_alloc_run(void);
+extern int test_alloc_run( void );
 typedef int (*test_run_fn)(void);
 
 static void*
 test_runner(void* arg) {
 	test_run_fn* tests = (test_run_fn*)arg;
+	int test_fn = 0;
 	int process_result = 0;
-	size_t itest, numtests;
 
-	for (numtests = 0; tests[numtests];)
-		++numtests;
-
-	itest = 0;
-	while (tests[itest] && (process_result >= 0)) {
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && !BUILD_ENABLE_LOG
-		{
-			char buffer[64];
-			string_t msg = string_format(buffer, sizeof(buffer),
-			                             STRING_CONST("Test %" PRIsize "/%" PRIsize " starting... "),
-			                             itest+1, numtests);
-			test_log_view_append(STRING_ARGS(msg));
-		}
-#endif
-
-		if ((process_result = tests[itest]()) >= 0) {
-			log_infof(HASH_TEST, STRING_CONST("Test %" PRIsize "/%" PRIsize " passed (%d)"),
-			          itest, numtests, process_result);
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && !BUILD_ENABLE_LOG
-			test_log_view_append(STRING_CONST("PASSED\n"));
-#endif
-		}
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && !BUILD_ENABLE_LOG
-		else {
-			test_log_view_append(STRING_CONST("FAILED\n"));
-		}
-#endif
-		++itest;
+	while (tests[test_fn] && (process_result >= 0)) {
+		if ((process_result = tests[test_fn]()) >= 0)
+			log_infof(HASH_TEST, STRING_CONST("All tests passed (%d)"), process_result);
+		++test_fn;
 	}
 
 	return (void*)(intptr_t)process_result;
@@ -269,11 +211,6 @@ main_run(void* main_arg) {
 #elif BUILD_DEPLOY
 	const string_const_t build_name = string_const(STRING_CONST("deploy"));
 #endif
-#if BUILD_MONOLITHIC
-	const string_const_t build_type = string_const(STRING_CONST(" monolithic"));
-#else
-	const string_const_t build_type = string_empty();
-#endif
 	char* pathbuf;
 	int process_result = 0;
 	thread_t event_thread;
@@ -282,12 +219,11 @@ main_run(void* main_arg) {
 
 	log_set_suppress(HASH_TEST, ERRORLEVEL_DEBUG);
 
-	log_infof(HASH_TEST, STRING_CONST("Memory library v%s built for %s using %s (%.*s%.*s)"),
+	log_infof(HASH_TEST, STRING_CONST("Memory library v%s built for %s using %s (%s)"),
 	          string_from_version_static(memory_module_version()).str, FOUNDATION_PLATFORM_DESCRIPTION,
-	          FOUNDATION_COMPILER_DESCRIPTION, STRING_FORMAT(build_name), STRING_FORMAT(build_type));
+	          FOUNDATION_COMPILER_DESCRIPTION, build_name.str);
 
-	thread_initialize(&event_thread, event_loop, 0, STRING_CONST("event_thread"),
-	                  THREAD_PRIORITY_NORMAL, 0);
+	thread_initialize(&event_thread, event_loop, 0, STRING_CONST("event_thread"), THREAD_PRIORITY_NORMAL, 0);
 	thread_start(&event_thread);
 
 	pathbuf = memory_allocate(HASH_STRING, BUILD_MAX_PATHLEN, 0, MEMORY_PERSISTENT);
@@ -306,10 +242,6 @@ main_run(void* main_arg) {
 
 	fs_remove_directory(STRING_ARGS(environment_temporary_directory()));
 
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && !BUILD_ENABLE_LOG
-	test_log_view_append(STRING_CONST("Tests starting\n"));
-#endif
-
 #if BUILD_MONOLITHIC
 
 	test_run_fn tests[] = {
@@ -326,19 +258,19 @@ main_run(void* main_arg) {
 
 	log_debug(HASH_TEST, STRING_CONST("Starting test runner thread"));
 
-	while (!thread_is_started(&test_thread)) {
+	while (!thread_is_running(&test_thread)) {
 		system_process_events();
-		thread_sleep(100);
+		thread_sleep(10);
 	}
 
 	while (thread_is_running(&test_thread)) {
 		system_process_events();
-		thread_sleep(100);
+		thread_sleep(10);
 	}
 
 	test_result = thread_join(&test_thread);
 	process_result = (int)(intptr_t)test_result;
-
+	
 	thread_finalize(&test_thread);
 
 #else
@@ -351,13 +283,6 @@ main_run(void* main_arg) {
 	if (process_result != 0)
 		log_warnf(HASH_TEST, WARNING_SUSPICIOUS, STRING_CONST("Tests failed with exit code %d"),
 		          process_result);
-
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && !BUILD_ENABLE_LOG
-	if (process_result)
-		test_log_view_append(STRING_CONST("Tests FAILED\n"));
-	else
-		test_log_view_append(STRING_CONST("Tests PASSED\n"));
-#endif
 
 #if FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID || FOUNDATION_PLATFORM_PNACL
 
@@ -376,7 +301,7 @@ main_run(void* main_arg) {
 	//Find all test executables in the current executable directory
 #if FOUNDATION_PLATFORM_WINDOWS
 	pattern = string_const(STRING_CONST("^test-.*\\.exe$"));
-#elif FOUNDATION_PLATFORM_MACOSX
+#elif FOUNDATION_PLATFORM_MACOS
 	pattern = string_const(STRING_CONST("^test-.*$"));
 #elif FOUNDATION_PLATFORM_POSIX
 	pattern = string_const(STRING_CONST("^test-.*$"));
@@ -387,7 +312,7 @@ main_run(void* main_arg) {
 	                              STRING_ARGS(pattern), false);
 	array_resize(exe_flags, array_size(exe_paths));
 	memset(exe_flags, 0, sizeof(unsigned int) * array_size(exe_flags));
-#if FOUNDATION_PLATFORM_MACOSX
+#if FOUNDATION_PLATFORM_MACOS
 	//Also search for test applications
 	string_const_t app_pattern = string_const(STRING_CONST("^test-.*\\.app$"));
 	regex_t* app_regex = regex_compile(app_pattern.str, app_pattern.length);
@@ -396,14 +321,13 @@ main_run(void* main_arg) {
 		if (regex_match(app_regex, subdirs[idir].str, subdirs[idir].length, 0, 0)) {
 			string_t exe_path = { subdirs[idir].str, subdirs[idir].length - 4 };
 			array_push(exe_paths, exe_path);
-			array_push(exe_flags, PROCESS_MACOSX_USE_OPENAPPLICATION);
+			array_push(exe_flags, PROCESS_MACOS_USE_OPENAPPLICATION);
 		}
 	}
 	string_array_deallocate(subdirs);
 	regex_deallocate(app_regex);
 #endif
 	for (iexe = 0, exesize = array_size(exe_paths); iexe < exesize; ++iexe) {
-		string_const_t* process_args = 0;
 		string_const_t exe_file_name = path_base_file_name(STRING_ARGS(exe_paths[iexe]));
 		if (string_equal(STRING_ARGS(exe_file_name), STRING_ARGS(environment_executable_name())))
 			continue; //Don't run self
@@ -417,10 +341,6 @@ main_run(void* main_arg) {
 		process_set_working_directory(process, STRING_ARGS(environment_executable_directory()));
 		process_set_flags(process, PROCESS_ATTACHED | exe_flags[iexe]);
 
-		if (!_test_memory_tracker)
-			array_push(process_args, string_const(STRING_CONST("--no-memory-tracker")));
-		process_set_arguments(process, process_args, array_size(process_args));
-
 		log_infof(HASH_TEST, STRING_CONST("Running test executable: %.*s"),
 		          STRING_FORMAT(exe_paths[iexe]));
 
@@ -430,15 +350,8 @@ main_run(void* main_arg) {
 			process_result = process_wait(process);
 		}
 		process_deallocate(process);
-		array_deallocate(process_args);
 
 		if (process_result != 0) {
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && !BUILD_ENABLE_LOG
-			char buffer[64];
-			string_const_t msg = string_format(buffer, sizeof(buffer), "Test %.*s failed\n",
-			                                   STRING_FORMAT(exe_paths[iexe]));
-			test_log_view_append(STRING_ARGS(msg));
-#endif
 			if (process_result >= PROCESS_INVALID_ARGS)
 				log_warnf(HASH_TEST, WARNING_SUSPICIOUS,
 				          STRING_CONST("Tests failed, process terminated with error %x"),
@@ -449,15 +362,6 @@ main_run(void* main_arg) {
 			process_set_exit_code(-1);
 			goto exit;
 		}
-
-#if (FOUNDATION_PLATFORM_IOS || FOUNDATION_PLATFORM_ANDROID) && !BUILD_ENABLE_LOG
-		{
-			char buffer[64];
-			string_const_t msg = string_format(buffer, sizeof(buffer), "Test %.*s PASSED\n",
-			                                   STRING_FORMAT(exe_paths[iexe]));
-			test_log_view_append(STRING_ARGS(msg));
-		}
-#endif
 
 		log_infof(HASH_TEST, STRING_CONST("All tests from %.*s passed (%d)"),
 		          STRING_FORMAT(exe_paths[iexe]), process_result);
@@ -476,16 +380,12 @@ exit:
 	_test_should_terminate = true;
 
 	thread_signal(&event_thread);
-	thread_join(&event_thread);
 	thread_finalize(&event_thread);
 
 	memory_deallocate(pathbuf);
 
 	log_infof(HASH_TEST, STRING_CONST("Tests exiting: %s (%d)"),
 	          process_result ? "FAILED" : "PASSED", process_result);
-
-	if (process_result)
-		memory_set_tracker(memory_tracker_none());
 
 	return process_result;
 }
@@ -498,4 +398,3 @@ main_finalize(void) {
 
 	foundation_finalize();
 }
-

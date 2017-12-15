@@ -11,7 +11,7 @@ import generator
 
 dependlibs = ['foundation']
 
-generator = generator.Generator(project = 'memory', dependlibs = dependlibs, variables = [('bundleidentifier', 'com.rampantpixels.foundation.$(binname)')])
+generator = generator.Generator(project = 'memory', dependlibs = dependlibs, variables = [('bundleidentifier', 'com.rampantpixels.memory.$(binname)')])
 target = generator.target
 writer = generator.writer
 toolchain = generator.toolchain
