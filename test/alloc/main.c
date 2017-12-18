@@ -166,7 +166,7 @@ typedef struct _allocator_thread_arg {
 	void**              pointers;
 } allocator_thread_arg_t;
 
-static void* 
+static void*
 allocator_thread(void* argp) {
 	allocator_thread_arg_t arg = *(allocator_thread_arg_t*)argp;
 	memory_system_t memsys = arg.memory_system;
@@ -289,7 +289,7 @@ DECLARE_TEST(alloc, threaded) {
 	return 0;
 }
 
-static void* 
+static void*
 crossallocator_thread(void* argp) {
 	allocator_thread_arg_t arg = *(allocator_thread_arg_t*)argp;
 	memory_system_t memsys = arg.memory_system;
@@ -363,11 +363,155 @@ DECLARE_TEST(alloc, crossthread) {
 	return 0;
 }
 
+static void*
+initfini_thread(void* argp) {
+	allocator_thread_arg_t arg = *(allocator_thread_arg_t*)argp;
+	memory_system_t memsys = arg.memory_system;
+	unsigned int iloop = 0;
+	unsigned int ipass = 0;
+	unsigned int icheck = 0;
+	unsigned int id = 0;
+	void* addr[4096];
+	char data[8192];
+	unsigned int cursize;
+	unsigned int iwait = 0;
+
+	for (id = 0; id < 8192; ++id)
+		data[id] = (char)id;
+
+	thread_yield();
+
+	for (iloop = 0; iloop < arg.loops; ++iloop) {
+		memsys.thread_initialize();
+
+		for (ipass = 0; ipass < arg.passes; ++ipass) {
+			cursize = 4 + arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + (iloop % 1024);
+
+			addr[ipass] = memsys.allocate(0, 4 + cursize, 0, MEMORY_PERSISTENT);
+			EXPECT_NE(addr[ipass], 0);
+
+			*(uint32_t*)addr[ipass] = (uint32_t)cursize;
+			memcpy(pointer_offset(addr[ipass], 4), data, cursize);
+
+			for (icheck = 0; icheck < ipass; ++icheck) {
+				EXPECT_NE(addr[icheck], addr[ipass]);
+				if (addr[icheck] < addr[ipass]) {
+					if (pointer_offset(addr[icheck], *(uint32_t*)addr[icheck]) > addr[ipass])
+						EXPECT_LE(pointer_offset(addr[icheck], *(uint32_t*)addr[icheck]), addr[ipass]);
+				}
+				else if (addr[icheck] > addr[ipass]) {
+					if (pointer_offset(addr[ipass], *(uint32_t*)addr[ipass]) > addr[ipass])
+						EXPECT_LE(pointer_offset(addr[ipass], *(uint32_t*)addr[ipass]), addr[icheck]);
+				}
+			}
+		}
+
+		for (ipass = 0; ipass < arg.passes; ++ipass) {
+			cursize = *(uint32_t*)addr[ipass];
+
+			EXPECT_EQ(memcmp(pointer_offset(addr[ipass], 4), data, cursize), 0);
+			memsys.deallocate(addr[ipass]);
+		}
+
+		memsys.thread_finalize();
+	}
+
+	return 0;
+}
+
+DECLARE_TEST(alloc, threadspam) {
+	thread_t thread[64];
+	void* threadres[64];
+	unsigned int i, j;
+	size_t num_passes, num_alloc_threads;
+	allocator_thread_arg_t thread_arg;
+	memory_system_t memsys = memory_system();
+	memsys.initialize();
+	memsys.thread_initialize();
+
+	num_passes = 1000;
+	num_alloc_threads = (system_hardware_threads() * 2) + 1;
+	if (num_alloc_threads < 4)
+		num_alloc_threads = 4;
+	if (num_alloc_threads > 64)
+		num_alloc_threads = 64;
+
+	//Warm-up
+	thread_arg.memory_system = memsys;
+	thread_arg.loops = 100;
+	thread_arg.passes = 10;
+	thread_arg.datasize[0] = 19;
+	thread_arg.datasize[1] = 249;
+	thread_arg.datasize[2] = 797;
+	thread_arg.datasize[3] = 3;
+	thread_arg.datasize[4] = 79;
+	thread_arg.datasize[5] = 34;
+	thread_arg.datasize[6] = 389;
+	thread_arg.num_datasize = 7;
+
+	EXPECT_EQ(allocator_thread(&thread_arg), 0);
+
+	for (i = 0; i < 7; ++i)
+		thread_arg.datasize[i] = 500;
+	EXPECT_EQ(allocator_thread(&thread_arg), 0);
+
+	thread_arg.datasize[0] = 19;
+	thread_arg.datasize[1] = 249;
+	thread_arg.datasize[2] = 797;
+	thread_arg.datasize[3] = 3;
+	thread_arg.datasize[4] = 79;
+	thread_arg.datasize[5] = 34;
+	thread_arg.datasize[6] = 389;
+	thread_arg.num_datasize = 7;
+
+	for (i = 0; i < num_alloc_threads; ++i) {
+		thread_initialize(thread + i, initfini_thread, &thread_arg, STRING_CONST("allocator"), THREAD_PRIORITY_NORMAL, 0);
+		thread_start(thread + i);
+	}
+
+	test_wait_for_threads_startup(thread, num_alloc_threads);
+
+	for (j = 0; j < num_passes; ++j) {
+		thread_sleep(1);
+
+		atomic_thread_fence_acquire();
+
+		for (i = 0; i < num_alloc_threads; ++i) {
+			while (!thread_is_started(thread + i))
+				thread_yield();
+			threadres[i] = thread_join(thread + i);
+			thread_finalize(thread + i);
+			if (threadres[i])
+				break;
+			thread_initialize(thread + i, initfini_thread, &thread_arg, STRING_CONST("allocator"), THREAD_PRIORITY_NORMAL, 0);
+			thread_start(thread + i);
+		}
+	}
+
+	test_wait_for_threads_finish(thread, num_alloc_threads);
+
+	for (i = 0; i < num_alloc_threads; ++i) {
+		if (!threadres[i]) {
+			threadres[i] = thread_join(thread + i);
+			thread_finalize(thread + i);
+		}
+	}
+
+	memsys.thread_finalize();
+	memsys.finalize();
+
+	for (i = 0; i < num_alloc_threads; ++i)
+		EXPECT_EQ(threadres[i], 0);
+
+	return 0;
+}
+
 static void 
 test_alloc_declare(void) {
 	ADD_TEST(alloc, alloc);
 	ADD_TEST(alloc, threaded);
 	ADD_TEST(alloc, crossthread);
+	ADD_TEST(alloc, threadspam);
 }
 
 static test_suite_t test_alloc_suite = {
