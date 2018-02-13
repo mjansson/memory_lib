@@ -189,7 +189,7 @@ allocator_thread(void* argp) {
 
 	for (iloop = 0; iloop < arg.loops; ++iloop) {
 		for (ipass = 0; ipass < arg.passes; ++ipass) {
-			cursize = 4 + arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + (iloop % 1024);
+			cursize = 4 + arg.datasize[(iloop + ipass + iwait) % arg.num_datasize] + ((iloop + ipass) % 1024);
 
 			addr[ipass] = memsys.allocate(0, 4 + cursize, 0, MEMORY_PERSISTENT);
 			EXPECT_NE(addr[ipass], 0);
@@ -233,7 +233,7 @@ DECLARE_TEST(alloc, threaded) {
 	memsys.initialize();
 	memsys.thread_initialize();
 
-	num_alloc_threads = system_hardware_threads() + 1;
+	num_alloc_threads = system_hardware_threads();
 	if (num_alloc_threads < 3)
 		num_alloc_threads = 3;
 	if (num_alloc_threads > 32)
@@ -241,8 +241,8 @@ DECLARE_TEST(alloc, threaded) {
 
 	//Warm-up
 	thread_arg.memory_system = memsys;
-	thread_arg.loops = 10000;
-	thread_arg.passes = 1024;
+	thread_arg.loops = 2000;
+	thread_arg.passes = 512;
 	thread_arg.datasize[0] = 19;
 	thread_arg.datasize[1] = 249;
 	thread_arg.datasize[2] = 797;
