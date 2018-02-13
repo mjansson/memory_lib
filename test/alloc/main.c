@@ -524,7 +524,7 @@ static test_suite_t test_alloc_suite = {
 	0
 };
 
-#if FOUNDATION_PLATFORM_ANDROID
+#if BUILD_MONOLITHIC
 
 int
 test_alloc_run(void);
