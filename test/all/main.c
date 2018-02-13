@@ -158,7 +158,7 @@ main_initialize(void) {
 
 	memset(&application, 0, sizeof(application));
 	application.name = string_const(STRING_CONST("Memory library test suite"));
-	application.short_name = string_const(STRING_CONST("stest_all"));
+	application.short_name = string_const(STRING_CONST("test_all"));
 	application.company = string_const(STRING_CONST("Rampant Pixels"));
 	application.version = foundation_version();
 	application.flags = APPLICATION_UTILITY;
