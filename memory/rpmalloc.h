@@ -39,8 +39,6 @@ typedef struct rpmalloc_global_statistics_t {
 	size_t mapped;
 	//! Current amount of memory in global caches for small and medium sizes (<64KiB)
 	size_t cached;
-	//! Curren amount of memory in global caches for large sizes (>=64KiB)
-	size_t cached_large;
 	//! Total amount of memory mapped (only if ENABLE_STATISTICS=1)
 	size_t mapped_total;
 	//! Total amount of memory unmapped (only if ENABLE_STATISTICS=1)
@@ -48,10 +46,6 @@ typedef struct rpmalloc_global_statistics_t {
 } rpmalloc_global_statistics_t;
 
 typedef struct rpmalloc_thread_statistics_t {
-	//! Amount of memory currently requested in allocations (only if ENABLE_STATISTICS=1)
-	size_t requested;
-	//! Amount of memory actually allocated in memory blocks (only if ENABLE_STATISTICS=1)
-	size_t allocated;
 	//! Current number of bytes available for allocation from active spans
 	size_t active;
 	//! Current number of bytes available in thread size class caches
@@ -72,19 +66,28 @@ typedef struct rpmalloc_config_t {
 	//  Optionally the function can store an alignment offset in the offset variable
 	//  in case it performs alignment and the returned pointer is offset from the
 	//  actual start of the memory region due to this alignment. The alignment offset
-	//  will be passed to the memory unmap function.
+	//  will be passed to the memory unmap function. The alignment offset MUST NOT be
+	//  larger than 65535 (storable in an uint16_t), if it is you must use natural
+	//  alignment to shift it into 16 bits.
 	void* (*memory_map)(size_t size, size_t* offset);
 	//! Unmap the memory pages starting at address and spanning the given number of bytes.
-	//  The address, size and offset variables will always be a value triple as used
-	//  in and returned by an earlier call to memory_map
-	void (*memory_unmap)(void* address, size_t size, size_t offset);
+	//  If release is set to 1, the unmap is for an entire span range as returned by
+	//  a previous call to memory_map and that the entire range should be released.
+	//  If release is set to 0, the unmap is a partial decommit of a subset of the mapped
+	//  memory range.
+	void (*memory_unmap)(void* address, size_t size, size_t offset, int release);
 	//! Size of memory pages. If set to 0, rpmalloc will use system calls to determine the page size.
 	//  The page size MUST be a power of two in [512,16384] range (2^9 to 2^14).
 	size_t page_size;
-	//! Size of a span of memory pages. MUST be a multiple of page size, and in [512,262144] range (unless 0).
+	//! Size of a span of memory pages. MUST be a multiple of page size, and in [4096,262144] range (unless 0).
 	//  Set to 0 to use the default span size. All memory mapping requests to memory_map will be made with
 	//  size set to a multiple of the span size.
 	size_t span_size;
+	//! Number of spans to map at each request to map new virtual memory blocks. This can
+	//  be used to minimize the system call overhead at the cost of virtual memory address
+	//  space. The extra mapped pages will not be written until actually used, so physical
+	//  committed memory should not be affected in the default implementation.
+	size_t span_map_count;
 	//! Debug callback if memory guards are enabled. Called if a memory overwrite is detected
 	void (*memory_overwrite)(void* address);
 } rpmalloc_config_t;
