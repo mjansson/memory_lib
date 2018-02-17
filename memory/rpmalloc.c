@@ -9,6 +9,10 @@
  *
  */
 
+#if BUILD_DEBUG
+#  define ENABLE_ASSERTS 1
+#endif
+
 #include "rpmalloc.h"
 
 /// Build time configurable limits
