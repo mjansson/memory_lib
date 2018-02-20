@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join('build', 'ninja'))
 
 import generator
 
-dependlibs = ['foundation']
+dependlibs = ['memory', 'foundation']
 
 generator = generator.Generator(project = 'memory', dependlibs = dependlibs, variables = [('bundleidentifier', 'com.rampantpixels.memory.$(binname)')])
 target = generator.target
@@ -60,12 +60,12 @@ if toolchain.is_monolithic() or target.is_ios() or target.is_android() or target
     ]]
   sources = [os.path.join(module, 'main.c') for module in test_cases] + test_extrasources
   if target.is_ios() or target.is_android() or target.is_tizen():
-    generator.app(module = '', sources = sources, binname = 'test-all', basepath = 'test', implicit_deps = [memory_lib], libs = ['test', 'memory', 'foundation'], resources = test_resources, includepaths = includepaths)
+    generator.app(module = '', sources = sources, binname = 'test-all', basepath = 'test', implicit_deps = [memory_lib], libs = ['test'] + dependlibs, resources = test_resources, includepaths = includepaths)
   else:
-    generator.bin(module = '', sources = sources, binname = 'test-all', basepath = 'test', implicit_deps = [memory_lib], libs = ['test', 'memory', 'foundation'], includepaths = includepaths)
+    generator.bin(module = '', sources = sources, binname = 'test-all', basepath = 'test', implicit_deps = [memory_lib], libs = ['test'] + dependlibs, includepaths = includepaths)
 else:
   sources = ['main.c']
   #Build one binary per test case
-  generator.bin(module = 'all', sources = sources, binname = 'test-all', basepath = 'test', implicit_deps = [memory_lib], libs = ['memory', 'foundation'], includepaths = includepaths)
+  generator.bin(module = 'all', sources = sources, binname = 'test-all', basepath = 'test', implicit_deps = [memory_lib], libs = dependlibs, includepaths = includepaths)
   for test in test_cases:
-    generator.bin(module = test, sources = sources, binname = 'test-' + test, basepath = 'test', implicit_deps = [memory_lib], libs = ['test', 'memory', 'foundation'], includepaths = includepaths)
+    generator.bin(module = test, sources = sources, binname = 'test-' + test, basepath = 'test', implicit_deps = [memory_lib], libs = ['test'] + dependlibs, includepaths = includepaths)
