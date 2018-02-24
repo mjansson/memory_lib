@@ -9,7 +9,7 @@
  *
  */
 
-#if BUILD_DEBUG
+#if defined(BUILD_DEBUG) && BUILD_DEBUG
 #  define ENABLE_ASSERTS 1
 #endif
 
