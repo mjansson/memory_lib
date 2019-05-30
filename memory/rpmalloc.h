@@ -1,9 +1,9 @@
-/* rpmalloc.h  -  Memory allocator  -  Public Domain  -  2016 Mattias Jansson / Rampant Pixels
+/* rpmalloc.h  -  Memory allocator  -  Public Domain  -  2016 Mattias Jansson
  *
  * This library provides a cross-platform lock free thread caching malloc implementation in C11.
  * The latest source code is always available at
  *
- * https://github.com/rampantpixels/rpmalloc
+ * https://github.com/mjansson/rpmalloc
  *
  * This library is put in the public domain; you can redistribute it and/or modify it without any restrictions.
  *
@@ -92,7 +92,13 @@ typedef struct rpmalloc_config_t {
 	//  committed memory should not be affected in the default implementation. Will be
 	//  aligned to a multiple of spans that match memory page size in case of huge pages.
 	size_t span_map_count;
-	//! Enable use of large/huge pages
+	//! Enable use of large/huge pages. If this flag is set to non-zero and page size is
+	//  zero, the allocator will try to enable huge pages and auto detect the configuration.
+	//  If this is set to non-zero and page_size is also non-zero, the allocator will
+	//  assume huge pages have been configured and enabled prior to initializing the
+	//  allocator.
+	//  For Windows, see https://docs.microsoft.com/en-us/windows/desktop/memory/large-page-support
+	//  For Linux, see https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
 	int enable_huge_pages;
 } rpmalloc_config_t;
 
@@ -152,19 +158,32 @@ rpcalloc(size_t num, size_t size) RPMALLOC_ATTRIBUTE;
 extern void*
 rprealloc(void* ptr, size_t size);
 
-//! Reallocate the given block to at least the given size and alignment, with optional control flags (see RPMALLOC_NO_PRESERVE)
+//! Reallocate the given block to at least the given size and alignment,
+//  with optional control flags (see RPMALLOC_NO_PRESERVE).
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
 extern void*
 rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags);
 
-//! Allocate a memory block of at least the given size and alignment
+//! Allocate a memory block of at least the given size and alignment.
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
 extern RPMALLOC_RESTRICT void*
 rpaligned_alloc(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
 
-//! Allocate a memory block of at least the given size and alignment
+//! Allocate a memory block of at least the given size and alignment.
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
 extern RPMALLOC_RESTRICT void*
 rpmemalign(size_t alignment, size_t size) RPMALLOC_ATTRIBUTE;
 
-//! Allocate a memory block of at least the given size and alignment
+//! Allocate a memory block of at least the given size and alignment.
+//  Alignment must be a power of two and a multiple of sizeof(void*),
+//  and should ideally be less than memory page size. A caveat of rpmalloc
+//  internals is that this must also be strictly less than the span size (default 64KiB)
 extern int
 rpposix_memalign(void **memptr, size_t alignment, size_t size);
 
