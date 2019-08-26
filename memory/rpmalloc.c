@@ -9,7 +9,19 @@
  *
  */
 
+#include <foundation/platform.h>
+#include <foundation/assert.h>
+
 #include "rpmalloc.h"
+
+#define error_t sys_error_t
+#include <errno.h>
+#undef error_t
+
+#if defined(BUILD_DEBUG) && BUILD_DEBUG
+#  define ENABLE_ASSERTS     1
+#  define ENABLE_STATISTICS  0
+#endif
 
 /// Build time configurable limits
 #ifndef HEAP_ARRAY_SIZE
@@ -136,14 +148,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#undef  assert
 #if ENABLE_ASSERTS
-#  undef NDEBUG
-#  if defined(_MSC_VER) && !defined(_DEBUG)
-#    define _DEBUG
-#  endif
-#  include <assert.h>
+#  define assert(x) FOUNDATION_ASSERT(x)
 #else
-#  undef  assert
 #  define assert(x) do {} while(0)
 #endif
 #if ENABLE_STATISTICS
@@ -1273,6 +1281,9 @@ _memory_allocate_from_heap_fallback(heap_t* heap, uint32_t class_idx) {
 
 	//Find a span in one of the cache levels
 	active_span = _memory_heap_extract_new_span(heap, 1, class_idx);
+	
+	if (!active_span)
+		return active_span;
 
 	//Mark span as owned by this heap and set base data, return first block
 	return _memory_span_set_new_active(heap, heap_class, active_span, class_idx);
@@ -1315,6 +1326,9 @@ _memory_allocate_large(heap_t* heap, size_t size) {
 
 	//Find a span in one of the cache levels
 	span_t* span = _memory_heap_extract_new_span(heap, span_count, SIZE_CLASS_COUNT);
+	
+	if (!span)
+		return span;
 
 	//Mark span as owned by this heap and set base data
 	assert(span->span_count == span_count);
@@ -1722,12 +1736,11 @@ rp_thread_destructor(void* value) {
 #    define MAP_UNINITIALIZED 0
 #  endif
 #endif
-#include <errno.h>
 
 //! Initialize the allocator and setup global data
-extern inline int
+int
 rpmalloc_initialize(void) {
-	if (_rpmalloc_initialized) {
+	if (_rpmalloc_initialized != 0) {
 		rpmalloc_thread_initialize();
 		return 0;
 	}
@@ -1737,7 +1750,7 @@ rpmalloc_initialize(void) {
 
 int
 rpmalloc_initialize_config(const rpmalloc_config_t* config) {
-	if (_rpmalloc_initialized) {
+	if (_rpmalloc_initialized != 0) {
 		rpmalloc_thread_initialize();
 		return 0;
 	}
@@ -2014,7 +2027,7 @@ rpmalloc_finalize(void) {
 }
 
 //! Initialize thread, assign heap
-extern inline void
+void
 rpmalloc_thread_initialize(void) {
 	if (!get_thread_heap_raw()) {
 		heap_t* heap = _memory_allocate_heap();
@@ -2137,7 +2150,7 @@ _memory_unmap_os(void* address, size_t size, size_t offset, size_t release) {
 
 // Extern interface
 
-extern inline RPMALLOC_ALLOCATOR void*
+RPMALLOC_ALLOCATOR void*
 rpmalloc(size_t size) {
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
@@ -2149,12 +2162,12 @@ rpmalloc(size_t size) {
 	return _memory_allocate(heap, size);
 }
 
-extern inline void
+void
 rpfree(void* ptr) {
 	_memory_deallocate(ptr);
 }
 
-extern inline RPMALLOC_ALLOCATOR void*
+RPMALLOC_ALLOCATOR void*
 rpcalloc(size_t num, size_t size) {
 	size_t total;
 #if ENABLE_VALIDATE_ARGS
@@ -2180,7 +2193,7 @@ rpcalloc(size_t num, size_t size) {
 	return block;
 }
 
-extern inline RPMALLOC_ALLOCATOR void*
+RPMALLOC_ALLOCATOR void*
 rprealloc(void* ptr, size_t size) {
 #if ENABLE_VALIDATE_ARGS
 	if (size >= MAX_ALLOC_SIZE) {
@@ -2322,12 +2335,12 @@ retry:
 	return ptr;
 }
 
-extern inline RPMALLOC_ALLOCATOR void*
+RPMALLOC_ALLOCATOR void*
 rpmemalign(size_t alignment, size_t size) {
 	return rpaligned_alloc(alignment, size);
 }
 
-extern inline int
+int
 rpposix_memalign(void **memptr, size_t alignment, size_t size) {
 	if (memptr)
 		*memptr = rpaligned_alloc(alignment, size);
@@ -2336,12 +2349,12 @@ rpposix_memalign(void **memptr, size_t alignment, size_t size) {
 	return *memptr ? 0 : ENOMEM;
 }
 
-extern inline size_t
+size_t
 rpmalloc_usable_size(void* ptr) {
 	return (ptr ? _memory_usable_size(ptr) : 0);
 }
 
-extern inline void
+void
 rpmalloc_thread_collect(void) {
 }
 

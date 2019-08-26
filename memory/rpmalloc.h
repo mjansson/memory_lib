@@ -11,7 +11,7 @@
 
 #pragma once
 
-#include <stddef.h>
+#include <foundation/platform.h>
 
 #ifdef __cplusplus
 extern "C" {
