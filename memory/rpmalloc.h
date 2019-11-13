@@ -5,44 +5,45 @@
  *
  * https://github.com/mjansson/rpmalloc
  *
- * This library is put in the public domain; you can redistribute it and/or modify it without any restrictions.
+ * This library is put in the public domain; you can redistribute it and/or modify it without any
+ * restrictions.
  *
  */
 
 #pragma once
 
-#include <foundation/platform.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #if defined(__clang__) || defined(__GNUC__)
-# define RPMALLOC_EXPORT __attribute__((visibility("default")))
-# define RPMALLOC_ALLOCATOR 
-# define RPMALLOC_ATTRIB_MALLOC __attribute__((__malloc__))
-# if defined(__clang_major__) && (__clang_major__ < 4)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
-# else
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size) __attribute__((alloc_size(size)))
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)  __attribute__((alloc_size(count, size)))
-# endif
-# define RPMALLOC_CDECL
-#elif defined(_MSC_VER)
-# define RPMALLOC_EXPORT
-# define RPMALLOC_ALLOCATOR __declspec(allocator) __declspec(restrict)
-# define RPMALLOC_ATTRIB_MALLOC
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
-# define RPMALLOC_CDECL __cdecl
+#define RPMALLOC_EXPORT __attribute__((visibility("default")))
+#define RPMALLOC_ALLOCATOR
+#define RPMALLOC_ATTRIB_MALLOC __attribute__((__malloc__))
+#if defined(__clang_major__) && (__clang_major__ < 4)
+#define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
 #else
-# define RPMALLOC_EXPORT
-# define RPMALLOC_ALLOCATOR
-# define RPMALLOC_ATTRIB_MALLOC
-# define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
-# define RPMALLOC_ATTRIB_ALLOC_SIZE2(count,size)
-# define RPMALLOC_CDECL
+#define RPMALLOC_ATTRIB_ALLOC_SIZE(size) __attribute__((alloc_size(size)))
+#define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size) __attribute__((alloc_size(count, size)))
+#endif
+#define RPMALLOC_CDECL
+#elif defined(_MSC_VER)
+#define RPMALLOC_EXPORT
+#define RPMALLOC_ALLOCATOR __declspec(allocator) __declspec(restrict)
+#define RPMALLOC_ATTRIB_MALLOC
+#define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
+#define RPMALLOC_CDECL __cdecl
+#else
+#define RPMALLOC_EXPORT
+#define RPMALLOC_ALLOCATOR
+#define RPMALLOC_ATTRIB_MALLOC
+#define RPMALLOC_ATTRIB_ALLOC_SIZE(size)
+#define RPMALLOC_ATTRIB_ALLOC_SIZE2(count, size)
+#define RPMALLOC_CDECL
 #endif
 
 //! Define RPMALLOC_CONFIGURABLE to enable configuring sizes
@@ -51,18 +52,22 @@ extern "C" {
 #endif
 
 //! Flag to rpaligned_realloc to not preserve content in reallocation
-#define RPMALLOC_NO_PRESERVE    1
+#define RPMALLOC_NO_PRESERVE 1
 
 typedef struct rpmalloc_global_statistics_t {
-	//! Current amount of virtual memory mapped, all of which might not have been committed (only if ENABLE_STATISTICS=1)
+	//! Current amount of virtual memory mapped, all of which might not have been committed (only if
+	//! ENABLE_STATISTICS=1)
 	size_t mapped;
-	//! Peak amount of virtual memory mapped, all of which might not have been committed (only if ENABLE_STATISTICS=1)
+	//! Peak amount of virtual memory mapped, all of which might not have been committed (only if
+	//! ENABLE_STATISTICS=1)
 	size_t mapped_peak;
 	//! Current amount of memory in global caches for small and medium sizes (<32KiB)
 	size_t cached;
-	//! Current amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default (only if ENABLE_STATISTICS=1)
+	//! Current amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT
+	//! which is 2MiB by default (only if ENABLE_STATISTICS=1)
 	size_t huge_alloc;
-	//! Peak amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which is 2MiB by default (only if ENABLE_STATISTICS=1)
+	//! Peak amount of memory allocated in huge allocations, i.e larger than LARGE_SIZE_LIMIT which
+	//! is 2MiB by default (only if ENABLE_STATISTICS=1)
 	size_t huge_alloc_peak;
 	//! Total amount of memory mapped since initialization (only if ENABLE_STATISTICS=1)
 	size_t mapped_total;
@@ -71,13 +76,16 @@ typedef struct rpmalloc_global_statistics_t {
 } rpmalloc_global_statistics_t;
 
 typedef struct rpmalloc_thread_statistics_t {
-	//! Current number of bytes available in thread size class caches for small and medium sizes (<32KiB)
+	//! Current number of bytes available in thread size class caches for small and medium sizes
+	//! (<32KiB)
 	size_t sizecache;
 	//! Current number of bytes available in thread span caches for small and medium sizes (<32KiB)
 	size_t spancache;
-	//! Total number of bytes transitioned from thread cache to global cache (only if ENABLE_STATISTICS=1)
+	//! Total number of bytes transitioned from thread cache to global cache (only if
+	//! ENABLE_STATISTICS=1)
 	size_t thread_to_global;
-	//! Total number of bytes transitioned from global cache to thread cache (only if ENABLE_STATISTICS=1)
+	//! Total number of bytes transitioned from global cache to thread cache (only if
+	//! ENABLE_STATISTICS=1)
 	size_t global_to_thread;
 	//! Per span count statistics (only if ENABLE_STATISTICS=1)
 	struct {
@@ -97,7 +105,8 @@ typedef struct rpmalloc_thread_statistics_t {
 		size_t to_reserved;
 		//! Number of spans transitioned from reserved state
 		size_t from_reserved;
-		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS mmap calls)
+		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS
+		//! mmap calls)
 		size_t map_calls;
 	} span_use[32];
 	//! Per size class statistics (only if ENABLE_STATISTICS=1)
@@ -116,7 +125,8 @@ typedef struct rpmalloc_thread_statistics_t {
 		size_t spans_from_cache;
 		//! Number of spans transitioned from reserved state
 		size_t spans_from_reserved;
-		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS mmap calls)
+		//! Number of raw memory map calls (not hitting the reserve spans but resulting in actual OS
+		//! mmap calls)
 		size_t map_calls;
 	} size_use[128];
 } rpmalloc_thread_statistics_t;
@@ -231,7 +241,8 @@ rprealloc(void* ptr, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_S
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB)
 RPMALLOC_EXPORT RPMALLOC_ALLOCATOR void*
-rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize, unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
+rpaligned_realloc(void* ptr, size_t alignment, size_t size, size_t oldsize,
+                  unsigned int flags) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB_ALLOC_SIZE(3);
 
 //! Allocate a memory block of at least the given size and alignment.
 //  Alignment must be a power of two and a multiple of sizeof(void*),
@@ -252,7 +263,7 @@ rpmemalign(size_t alignment, size_t size) RPMALLOC_ATTRIB_MALLOC RPMALLOC_ATTRIB
 //  and should ideally be less than memory page size. A caveat of rpmalloc
 //  internals is that this must also be strictly less than the span size (default 64KiB)
 RPMALLOC_EXPORT int
-rpposix_memalign(void **memptr, size_t alignment, size_t size);
+rpposix_memalign(void** memptr, size_t alignment, size_t size);
 
 //! Query the usable size of the given memory block (from given pointer to the end of block)
 RPMALLOC_EXPORT size_t
