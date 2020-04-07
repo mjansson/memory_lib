@@ -1,4 +1,4 @@
-package com.rampantpixels.memory.test;
+package com.maniccoder.memory.test;
 
 import android.os.Bundle;
 import android.app.NativeActivity;

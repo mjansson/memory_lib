@@ -95,7 +95,7 @@
 			isa = PBXProject;
 			attributes = {
 				LastUpgradeCheck = 0920;
-				ORGANIZATIONNAME = "Rampant Pixels AB";
+				ORGANIZATIONNAME = "";
 				TargetAttributes = {
 					CDF83DE120420B4300563423 = {
 						CreatedOnToolsVersion = 9.2;

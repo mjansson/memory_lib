@@ -1,14 +1,14 @@
-/* memory.c  -  Memory library  -  Public Domain  -  2013 Mattias Jansson / Rampant Pixels
+/* memory.c  -  Memory library  -  Public Domain  -  2013 Mattias Jansson
  *
  * This library provides a cross-platform memory allocation library in C11 providing a lock-free
  * implementation of memory allocation and deallocation for projects based on our foundation library.
  * The latest source code is always available at
  *
- * https://github.com/rampantpixels/memory_lib
+ * https://github.com/mjansson/memory_lib
  *
  * This library is built on top of the foundation library available at
  *
- * https://github.com/rampantpixels/foundation_lib
+ * https://github.com/mjansson/foundation_lib
  *
  * This library is put in the public domain; you can redistribute it and/or modify it without any restrictions.
  *
@@ -40,8 +40,7 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 
 static void*
 _memory_reallocate(void* p, size_t size, unsigned int align, size_t oldsize, unsigned int hint) {
-	return rpaligned_realloc(p, align, size, oldsize,
-                             (hint & MEMORY_NO_PRESERVE) ? RPMALLOC_NO_PRESERVE : 0);
+	return rpaligned_realloc(p, align, size, oldsize, (hint & MEMORY_NO_PRESERVE) ? RPMALLOC_NO_PRESERVE : 0);
 }
 
 static void

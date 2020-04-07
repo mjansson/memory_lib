@@ -118,7 +118,7 @@
 			isa = PBXProject;
 			attributes = {
 				LastUpgradeCheck = 0920;
-				ORGANIZATIONNAME = "Rampant Pixels AB";
+				ORGANIZATIONNAME = "";
 				TargetAttributes = {
 					CD24EBCE2043368D0083452C = {
 						CreatedOnToolsVersion = 9.2;
@@ -301,7 +301,7 @@
 					"-lfoundation",
 				);
 				PRECOMPS_INCLUDE_HEADERS_FROM_BUILT_PRODUCTS_DIR = NO;
-				PRODUCT_BUNDLE_IDENTIFIER = com.rampantpixels.memory.test;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maniccoder.memory.test;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TARGETED_DEVICE_FAMILY = "1,2";
 				USE_HEADERMAP = NO;
@@ -335,7 +335,7 @@
 					"-lfoundation",
 				);
 				PRECOMPS_INCLUDE_HEADERS_FROM_BUILT_PRODUCTS_DIR = NO;
-				PRODUCT_BUNDLE_IDENTIFIER = com.rampantpixels.memory.test;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maniccoder.memory.test;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TARGETED_DEVICE_FAMILY = "1,2";
 				USE_HEADERMAP = NO;
