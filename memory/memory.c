@@ -55,7 +55,7 @@ _memory_thread_initialize(void) {
 
 static void
 _memory_thread_finalize(void) {
-	rpmalloc_thread_finalize();
+	rpmalloc_thread_finalize(0);
 }
 
 memory_system_t
