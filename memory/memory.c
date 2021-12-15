@@ -20,17 +20,17 @@
 #include "rpmalloc.h"
 
 static int
-_memory_initialize(void) {
+memory_rpmalloc_initialize(void) {
 	return rpmalloc_initialize();
 }
 
 static void
-_memory_finalize(void) {
+memory_rpmalloc_finalize(void) {
 	rpmalloc_finalize();
 }
 
 static void*
-_memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint) {
+memory_rpmalloc_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint) {
 	FOUNDATION_UNUSED(context);
 	void* block = rpmemalign(align, size);
 	if ((hint & MEMORY_ZERO_INITIALIZED) && block)
@@ -39,22 +39,22 @@ _memory_allocate(hash_t context, size_t size, unsigned int align, unsigned int h
 }
 
 static void*
-_memory_reallocate(void* p, size_t size, unsigned int align, size_t oldsize, unsigned int hint) {
+memory_rpmalloc_reallocate(void* p, size_t size, unsigned int align, size_t oldsize, unsigned int hint) {
 	return rpaligned_realloc(p, align, size, oldsize, (hint & MEMORY_NO_PRESERVE) ? RPMALLOC_NO_PRESERVE : 0);
 }
 
 static void
-_memory_deallocate(void* p) {
+memory_rpmalloc_deallocate(void* p) {
 	rpfree(p);
 }
 
 static void
-_memory_thread_initialize(void) {
+memory_rpmalloc_thread_initialize(void) {
 	rpmalloc_thread_initialize();
 }
 
 static void
-_memory_thread_finalize(void) {
+memory_rpmalloc_thread_finalize(void) {
 	rpmalloc_thread_finalize(0);
 }
 
@@ -62,12 +62,12 @@ memory_system_t
 memory_system(void) {
 	memory_system_t memsystem;
 	memset(&memsystem, 0, sizeof(memsystem));
-	memsystem.allocate = _memory_allocate;
-	memsystem.reallocate = _memory_reallocate;
-	memsystem.deallocate = _memory_deallocate;
-	memsystem.initialize = _memory_initialize;
-	memsystem.finalize = _memory_finalize;
-	memsystem.thread_initialize = _memory_thread_initialize;
-	memsystem.thread_finalize = _memory_thread_finalize;
+	memsystem.allocate = memory_rpmalloc_allocate;
+	memsystem.reallocate = memory_rpmalloc_reallocate;
+	memsystem.deallocate = memory_rpmalloc_deallocate;
+	memsystem.initialize = memory_rpmalloc_initialize;
+	memsystem.finalize = memory_rpmalloc_finalize;
+	memsystem.thread_initialize = memory_rpmalloc_thread_initialize;
+	memsystem.thread_finalize = memory_rpmalloc_thread_finalize;
 	return memsystem;
 }
