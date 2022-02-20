@@ -40,6 +40,7 @@ memory_rpmalloc_allocate(hash_t context, size_t size, unsigned int align, unsign
 
 static void*
 memory_rpmalloc_reallocate(void* p, size_t size, unsigned int align, size_t oldsize, unsigned int hint) {
+	FOUNDATION_ASSERT(!p || oldsize);
 	void* block = rpaligned_realloc(p, align, size, oldsize, (hint & MEMORY_NO_PRESERVE) ? RPMALLOC_NO_PRESERVE : 0);
 	if ((hint & MEMORY_ZERO_INITIALIZED) && block && (size > oldsize))
 		memset(pointer_offset(block, oldsize), 0, (size - oldsize));
