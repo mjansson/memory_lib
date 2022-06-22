@@ -157,7 +157,7 @@ DECLARE_TEST(alloc, alloc) {
 	return 0;
 }
 
-typedef struct _allocator_thread_arg {
+typedef struct allocator_thread_arg_t {
 	memory_system_t memory_system;
 	unsigned int loops;
 	unsigned int passes;  // max 4096
