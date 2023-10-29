@@ -19,9 +19,14 @@
 #include "memory.h"
 #include "rpmalloc.h"
 
+#if FOUNDATION_COMPILER_CLANG
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wcast-qual"
+#endif
+
 static int
 memory_rpmalloc_initialize(void) {
-	return rpmalloc_initialize();
+	return rpmalloc_initialize(0);
 }
 
 static void
@@ -32,10 +37,17 @@ memory_rpmalloc_finalize(void) {
 static void*
 memory_rpmalloc_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint) {
 	FOUNDATION_UNUSED(context);
-	void* block = rpmemalign(align, size);
-	if ((hint & MEMORY_ZERO_INITIALIZED) && block)
-		memset(block, 0, size);
-	return block;
+	if (align <= 16) {
+		void* block = rpmalloc(size);
+		if (hint & MEMORY_ZERO_INITIALIZED)
+			memset(block, 0, size);
+		return block;
+	} else {
+		void* block = rpaligned_alloc(align, size);
+		if (hint & MEMORY_ZERO_INITIALIZED)
+			memset(block, 0, size);
+		return block;
+	}
 }
 
 static void*
@@ -45,6 +57,11 @@ memory_rpmalloc_reallocate(void* p, size_t size, unsigned int align, size_t olds
 	if ((hint & MEMORY_ZERO_INITIALIZED) && block && (size > oldsize))
 		memset(pointer_offset(block, oldsize), 0, (size - oldsize));
 	return block;
+}
+
+static size_t
+memory_rpmalloc_usable_size(const void* p) {
+	return rpmalloc_usable_size((void*)p);
 }
 
 static void
@@ -59,7 +76,7 @@ memory_rpmalloc_thread_initialize(void) {
 
 static void
 memory_rpmalloc_thread_finalize(void) {
-	rpmalloc_thread_finalize(0);
+	rpmalloc_thread_finalize();
 }
 
 memory_system_t
@@ -70,6 +87,7 @@ memory_system(void) {
 	memsystem.reallocate = memory_rpmalloc_reallocate;
 	memsystem.deallocate = memory_rpmalloc_deallocate;
 	memsystem.initialize = memory_rpmalloc_initialize;
+	memsystem.usable_size = memory_rpmalloc_usable_size;
 	memsystem.finalize = memory_rpmalloc_finalize;
 	memsystem.thread_initialize = memory_rpmalloc_thread_initialize;
 	memsystem.thread_finalize = memory_rpmalloc_thread_finalize;
