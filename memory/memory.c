@@ -38,15 +38,15 @@ static void*
 memory_rpmalloc_allocate(hash_t context, size_t size, unsigned int align, unsigned int hint) {
 	FOUNDATION_UNUSED(context);
 	if (align <= 16) {
-		void* block = rpmalloc(size);
-		if (hint & MEMORY_ZERO_INITIALIZED)
-			memset(block, 0, size);
-		return block;
+		if (!(hint & MEMORY_ZERO_INITIALIZED))
+			return rpmalloc(size);
+		else
+			return rpzalloc(size);
 	} else {
-		void* block = rpaligned_alloc(align, size);
-		if (hint & MEMORY_ZERO_INITIALIZED)
-			memset(block, 0, size);
-		return block;
+		if (!(hint & MEMORY_ZERO_INITIALIZED))
+			return rpaligned_alloc(align, size);
+		else
+			return rpaligned_zalloc(align, size);
 	}
 }
 
